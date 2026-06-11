@@ -30,10 +30,11 @@ def _utcnow() -> datetime:
 class Market(BaseModel):
     """A normalized Polymarket market.
 
-    ``slug``, ``volume_total``, and ``liquidity`` extend the base research model
-    to support acting on an edge: ``slug`` builds the polymarket.com trade URL,
-    and ``volume_total``/``liquidity`` indicate whether a meaningful bet can
-    actually be filled.
+    ``slug``, ``volume_total``, ``liquidity``, and ``yes_token_id`` extend the
+    base research model to support acting on an edge: ``slug`` builds the
+    polymarket.com trade URL, ``volume_total``/``liquidity`` indicate whether a
+    meaningful bet can actually be filled, and ``yes_token_id`` is the CLOB token
+    for the YES outcome (enables future live price-history / order-book depth).
     """
 
     id: str
@@ -43,6 +44,7 @@ class Market(BaseModel):
     volume_24h: float
     volume_total: float | None = None
     liquidity: float | None = None
+    yes_token_id: str | None = None  # clobTokenIds[0]; for future CLOB price-history / depth
     end_date: datetime | None
     tags: list[str]
     description: str

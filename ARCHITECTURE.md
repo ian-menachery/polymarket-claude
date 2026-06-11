@@ -212,6 +212,7 @@ CREATE TABLE IF NOT EXISTS markets (
     volume_24h   REAL,
     volume_total REAL,               -- lifetime volume (Gamma `volume`)
     liquidity    REAL,               -- order-book depth (Gamma `liquidity`)
+    yes_token_id TEXT,               -- CLOB token for YES outcome (clobTokenIds[0])
     end_date     TEXT,
     tags         TEXT,               -- JSON array of label strings
     description  TEXT,
