@@ -67,10 +67,12 @@ def _ensure_env() -> None:
 
 
 def current_provider() -> str:
+    _ensure_env()  # load .env before reading, so dispatch respects LLM_PROVIDER
     return os.getenv("LLM_PROVIDER", "anthropic").strip().lower()
 
 
 def current_model() -> str:
+    _ensure_env()
     if current_provider() == "openai":
         return os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
     return os.getenv("ANALYSIS_MODEL", ANTHROPIC_DEFAULT_MODEL)
