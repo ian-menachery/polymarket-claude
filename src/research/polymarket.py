@@ -243,32 +243,40 @@ def fetch_resolution(market_id: str) -> bool | None:
     return _detect_resolution(raw)
 
 
-def _clob_price(client: httpx.Client, token_id: str, side: str) -> float | None:
-    """Best price on one side of the CLOB book, or None if unavailable.
+def _best_price(levels: list, pick) -> float | None:
+    """Best price from a list of {price,size} levels via ``pick`` (max for bids,
+    min for asks). Order-independent — does not trust the array's sort."""
+    prices = []
+    for lvl in levels or []:
+        try:
+            p = float(lvl["price"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if 0.0 <= p <= 1.0:
+            prices.append(p)
+    return pick(prices) if prices else None
 
-    GOTCHA: the endpoint is named by *book side*, not by your action —
-    ``side=buy`` returns the best BID, ``side=sell`` returns the best ASK
-    (verified: midpoint == (buy + sell) / 2). To BUY YES you pay the ASK
-    (``side=sell``); to bet NO you transact at the BID (``side=buy``).
+
+def fetch_best_bid_ask(yes_token_id: str) -> tuple[float, float] | None:
+    """Top-of-book ``(best_bid, best_ask)`` for the YES CLOB token, or None.
+
+    Reads the order book from ``GET /book?token_id=…``. Best bid = highest bid
+    price, best ask = lowest ask price (computed order-independently, not relying
+    on the array's sort). Returns None on HTTP/parse failure or a one-sided book
+    (missing a usable bid or ask) so the caller can fall back to the mid price.
     """
     try:
-        r = client.get("/price", params={"token_id": token_id, "side": side})
-        r.raise_for_status()
-        price = (r.json() or {}).get("price")
-        return float(price) if price not in (None, "") else None
+        with httpx.Client(base_url=CLOB_BASE_URL, timeout=15.0) as client:
+            r = client.get("/book", params={"token_id": yes_token_id})
+            r.raise_for_status()
+            body = r.json() or {}
     except (httpx.HTTPError, ValueError, TypeError):
         return None
 
-
-def fetch_best_bid_ask(yes_token_id: str) -> tuple[float | None, float | None]:
-    """(best_bid, best_ask) for the YES CLOB token; (None, None) on failure.
-
-    Top-of-book only. Best bid = highest price to sell into; best ask = lowest
-    price to buy at. Either may be None for an illiquid/one-sided book.
-    """
-    with httpx.Client(base_url=CLOB_BASE_URL, timeout=15.0) as client:
-        best_bid = _clob_price(client, yes_token_id, "buy")   # book's buy side = bid
-        best_ask = _clob_price(client, yes_token_id, "sell")  # book's sell side = ask
+    best_bid = _best_price(body.get("bids"), max)
+    best_ask = _best_price(body.get("asks"), min)
+    if best_bid is None or best_ask is None:
+        return None
     return best_bid, best_ask
 
 
