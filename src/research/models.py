@@ -118,7 +118,9 @@ class ScanResult(BaseModel):
     annualized_ev: float | None = None  # ev_pct * 365 / days_to_close (None below the days floor)
     days_to_close: float | None = None
     best_bid: float | None = None  # CLOB best bid for the YES token (top of book)
+    bid_depth: float | None = None  # shares resting at best_bid
     best_ask: float | None = None  # CLOB best ask for the YES token (top of book)
+    ask_depth: float | None = None  # shares resting at best_ask
     price_paid: float | None = None  # cost per share on the chosen side (executable, else mid)
     executable: bool = False  # True if priced off the live book; False = mid-price fallback
     refutation: Refutation | None = None  # skeptical second pass (top edges only; None otherwise)

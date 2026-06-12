@@ -123,12 +123,15 @@ def scan(req: ScanRequest) -> list[ScanResult]:
                 book = polymarket.fetch_best_bid_ask(m.yes_token_id)
             except Exception:  # noqa: BLE001 — a CLOB hiccup shouldn't kill the scan
                 book = None
-        bid, ask = book if book else (None, None)
+        bid = ask = bid_depth = ask_depth = None
+        if book:
+            bid, ask, bid_depth, ask_depth = book  # BookTop(best_bid, best_ask, bid_depth, ask_depth)
 
         ev = _ev_fields(m, calibrated_p, bid, ask, req.min_days_to_close)
         if ev["annualized_ev"] is None:  # below the days floor (defensive; pre-filtered)
             continue
-        results.append(ScanResult(market=m, analysis=analysis, calibrated_prob=calibrated_p, **ev))
+        results.append(ScanResult(market=m, analysis=analysis, calibrated_prob=calibrated_p,
+                                  bid_depth=bid_depth, ask_depth=ask_depth, **ev))
 
     results.sort(key=lambda r: r.annualized_ev or -1.0, reverse=True)
 
