@@ -192,4 +192,9 @@ def set_resolution(market_id: str) -> Any:
 
 
 if __name__ == "__main__":
+    # Start the background auto-scan only when run as the server (never on import),
+    # so tests/scripts/test_client don't spawn live scans.
+    from research import scheduler
+
+    scheduler.start()
     app.run(host="127.0.0.1", port=5000)
