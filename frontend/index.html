@@ -15,6 +15,7 @@
       --green: #1a7f37; --green-bg: #e8f5ec;
       --red: #cf222e; --red-bg: #fdeced;
       --gray: #6b7280; --gray-bg: #f0f1f3;
+      --warn: #92610a; --warn-bg: #fff4e0;
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--ink);
@@ -27,10 +28,13 @@
     .header-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
     h1 { font-size: 18px; margin: 0; }
     h1 small { color: var(--muted); font-weight: 400; font-size: 13px; }
-    .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-      margin-left: auto; }
+    .tabs { display: flex; gap: 4px; }
+    .tab { font-size: 13px; padding: 6px 13px; border-radius: 7px; border: 1px solid var(--line);
+      background: var(--card); cursor: pointer; }
+    .tab.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+    .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-left: auto; }
     label.ctl { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-    select, input[type=range] { font: inherit; }
+    select, input[type=range], input[type=number] { font: inherit; }
     button { font: inherit; cursor: pointer; border: 1px solid var(--line);
       background: var(--card); border-radius: 7px; padding: 7px 13px; }
     button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -71,13 +75,30 @@
     .summary { font-size: 13.5px; color: #374151; }
     .conf { font-size: 12px; color: var(--muted); }
     .disclaimer { font-size: 11px; color: #9aa1ab; font-style: italic; }
-    .err { font-size: 12.5px; color: var(--red); background: var(--red-bg);
-      padding: 6px 9px; border-radius: 7px; }
+    .err { font-size: 12.5px; color: var(--red); background: var(--red-bg); padding: 6px 9px; border-radius: 7px; }
     .row-end { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .spinner { width: 13px; height: 13px; border: 2px solid #fff; border-top-color: transparent;
       border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: -2px; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+
+    /* Scanner */
+    .scan-form { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end;
+      background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+    .scan-form label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 4px; }
+    .scan-form input, .scan-form select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; width: 130px; }
+    .warn { font-size: 12.5px; color: var(--warn); background: var(--warn-bg);
+      border: 1px solid #f2d699; padding: 8px 11px; border-radius: 8px; margin: 12px 0; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+    table.scan { border-collapse: collapse; width: 100%; font-size: 13px; }
+    table.scan th, table.scan td { padding: 9px 11px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+    table.scan th { color: var(--muted); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .03em; }
+    table.scan td.q-cell, table.scan th.q-cell { text-align: left; white-space: normal; min-width: 260px; max-width: 380px; }
+    table.scan tr:last-child td { border-bottom: none; }
+    .side { font-weight: 700; font-size: 12px; padding: 2px 7px; border-radius: 6px; }
+    .side.yes { color: var(--green); background: var(--green-bg); }
+    .side.no { color: var(--red); background: var(--red-bg); }
+    .ann { font-weight: 700; }
   </style>
 </head>
 <body>
@@ -105,12 +126,22 @@
         if (!r.ok) throw new Error(d.error || "Analysis failed");
         return d;
       },
+      async scan(params) {
+        const r = await fetch("/api/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(params),
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(typeof d.error === "string" ? d.error : "Scan failed");
+        return d;
+      },
     };
 
     // --- formatting helpers ---
     const pct = (x) => (x == null ? "—" : Math.round(x * 100) + "%");
-    const money = (n) =>
-      n == null ? "—" : "$" + Math.round(n).toLocaleString("en-US");
+    const pct1 = (x) => (x == null ? "—" : (x * 100).toFixed(0) + "%");
+    const money = (n) => (n == null ? "—" : "$" + Math.round(n).toLocaleString("en-US"));
     const tradeUrl = (slug) => `https://polymarket.com/event/${slug}`;
 
     function timeToClose(iso) {
@@ -119,11 +150,9 @@
       if (ms <= 0) return "closed";
       const days = Math.floor(ms / 86400000);
       if (days >= 1) return `${days}d`;
-      const hrs = Math.floor(ms / 3600000);
-      return `${hrs}h`;
+      return `${Math.floor(ms / 3600000)}h`;
     }
 
-    // Signed divergence in percentage points, from the derived edge.
     function divergence(a) {
       if (!a || a.edge_magnitude == null) return null;
       const pp = Math.round(a.edge_magnitude * 100);
@@ -141,8 +170,7 @@
         setBusy(true);
         setErr(null);
         try {
-          const analysis = await API.analyze(m.id);
-          onAnalyzed(m.id, analysis);
+          onAnalyzed(m.id, await API.analyze(m.id));
         } catch (e) {
           setErr(e.message);
         } finally {
@@ -151,21 +179,16 @@
       }
 
       const div = divergence(a);
-
       return (
         <div className="card">
-          <div className="tags">
-            {m.tags.map((t) => <span className="tag" key={t}>{t}</span>)}
-          </div>
+          <div className="tags">{m.tags.map((t) => <span className="tag" key={t}>{t}</span>)}</div>
           <div className="q">{m.question}</div>
-
           <div className="stats">
             <div className="prob">{pct(m.market_prob)} <small>YES</small></div>
             <div className="kv">24h vol <b>{money(m.volume_24h)}</b></div>
             <div className="kv">liquidity <b>{money(m.liquidity)}</b></div>
             <div className="kv">closes <b>{timeToClose(m.end_date)}</b></div>
           </div>
-
           {a && !a.error && (
             <div className="divergence">
               <span className="kv">Market <b>{pct(m.market_prob)}</b></span>
@@ -175,25 +198,15 @@
               {a.edge && <span className="edge-label">{a.edge}</span>}
             </div>
           )}
-
           {a && a.factors && a.factors.length > 0 && (
-            <div className="factors">
-              {a.factors.map((f, i) => <span className="factor" key={i}>{f}</span>)}
-            </div>
+            <div className="factors">{a.factors.map((f, i) => <span className="factor" key={i}>{f}</span>)}</div>
           )}
           {a && a.summary && <div className="summary">{a.summary}</div>}
           {a && a.confidence && (
-            <div className="conf">
-              confidence: <b>{a.confidence}</b>
-              {analysis_count > 1 && <span> · analyzed {analysis_count}×</span>}
-            </div>
+            <div className="conf">confidence: <b>{a.confidence}</b>{analysis_count > 1 && <span> · analyzed {analysis_count}×</span>}</div>
           )}
-          {a && (
-            <div className="disclaimer">Claude's estimate — a research aid, not financial advice.</div>
-          )}
-
+          {a && <div className="disclaimer">Claude's estimate — a research aid, not financial advice.</div>}
           {err && <div className="err">{err}</div>}
-
           <div className="row-end">
             <a href={tradeUrl(m.slug)} target="_blank" rel="noopener noreferrer">Trade ↗</a>
             <button onClick={runAnalyze} disabled={busy} className={a ? "" : "primary"}>
@@ -204,16 +217,196 @@
       );
     }
 
-    function App() {
-      const [markets, setMarkets] = useState([]);
-      const [loading, setLoading] = useState(true);
-      const [refreshing, setRefreshing] = useState(false);
-      const [error, setError] = useState(null);
-
+    function MarketsView({ markets, onAnalyzed, refreshing, onRefresh, error }) {
       const [tag, setTag] = useState(null);
       const [analyzedOnly, setAnalyzedOnly] = useState(false);
       const [minDiv, setMinDiv] = useState(0);
       const [sort, setSort] = useState("divergence");
+
+      const allTags = useMemo(() => {
+        const s = new Set();
+        markets.forEach((it) => it.market.tags.forEach((t) => s.add(t)));
+        return [...s].sort();
+      }, [markets]);
+
+      const shown = useMemo(() => {
+        let list = markets.slice();
+        if (tag) list = list.filter((it) => it.market.tags.includes(tag));
+        if (analyzedOnly) list = list.filter((it) => it.latest_analysis);
+        if (minDiv > 0)
+          list = list.filter((it) => it.latest_analysis && it.latest_analysis.edge_magnitude != null
+            && it.latest_analysis.edge_magnitude * 100 >= minDiv);
+        const dv = (it) => (it.latest_analysis && it.latest_analysis.edge_magnitude) || -1;
+        if (sort === "divergence") list.sort((a, b) => dv(b) - dv(a));
+        else if (sort === "volume") list.sort((a, b) => (b.market.volume_24h || 0) - (a.market.volume_24h || 0));
+        else if (sort === "close") list.sort((a, b) => new Date(a.market.end_date || 8.64e15) - new Date(b.market.end_date || 8.64e15));
+        return list;
+      }, [markets, tag, analyzedOnly, minDiv, sort]);
+
+      return (
+        <div>
+          <div className="controls">
+            <label className="ctl">sort
+              <select value={sort} onChange={(e) => setSort(e.target.value)}>
+                <option value="divergence">divergence</option>
+                <option value="volume">24h volume</option>
+                <option value="close">time to close</option>
+              </select>
+            </label>
+            <label className="ctl">min ±{minDiv}pp
+              <input type="range" min="0" max="50" value={minDiv} onChange={(e) => setMinDiv(Number(e.target.value))} />
+            </label>
+            <label className="ctl">
+              <input type="checkbox" checked={analyzedOnly} onChange={(e) => setAnalyzedOnly(e.target.checked)} />
+              analyzed only
+            </label>
+            <button className="primary" onClick={onRefresh} disabled={refreshing}>
+              {refreshing ? <span className="spinner"></span> : "Refresh markets"}
+            </button>
+          </div>
+          {allTags.length > 0 && (
+            <div className="chips">
+              <span className={"chip" + (tag === null ? " active" : "")} onClick={() => setTag(null)}>all</span>
+              {allTags.map((t) => (
+                <span key={t} className={"chip" + (tag === t ? " active" : "")} onClick={() => setTag(t)}>{t}</span>
+              ))}
+            </div>
+          )}
+          {error && <div className="meta-line" style={{ color: "var(--red)" }}>{error}</div>}
+          <div className="meta-line">{shown.length} market{shown.length === 1 ? "" : "s"}</div>
+          <main>
+            {markets.length === 0 ? (
+              <div className="empty">No markets yet — hit <b>Refresh markets</b> to load from Polymarket.</div>
+            ) : shown.length === 0 ? (
+              <div className="empty">No markets match the current filters.</div>
+            ) : (
+              <div className="grid">
+                {shown.map((it) => <MarketCard key={it.market.id} item={it} onAnalyzed={onAnalyzed} />)}
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    function ScannerView() {
+      const [req, setReq] = useState({
+        min_volume_24h: 10000, min_liquidity: 0, min_days_to_close: 7,
+        min_divergence: 0.05, max_age_hours: 24, max_markets: 25, category: "",
+      });
+      const [results, setResults] = useState(null);
+      const [scanning, setScanning] = useState(false);
+      const [err, setErr] = useState(null);
+
+      const num = (k) => (e) => setReq((r) => ({ ...r, [k]: Number(e.target.value) }));
+
+      async function run() {
+        setScanning(true);
+        setErr(null);
+        try {
+          const payload = { ...req };
+          if (!payload.category) delete payload.category;
+          setResults(await API.scan(payload));
+        } catch (e) {
+          setErr(e.message);
+        } finally {
+          setScanning(false);
+        }
+      }
+
+      const fields = [
+        ["min_volume_24h", "min 24h volume ($)"],
+        ["min_liquidity", "min liquidity ($)"],
+        ["min_days_to_close", "min days to close"],
+        ["min_divergence", "min divergence (0–1)"],
+        ["max_age_hours", "reuse if analyzed within (h)"],
+        ["max_markets", "max markets to fetch"],
+      ];
+
+      return (
+        <main>
+          <div className="scan-form">
+            {fields.map(([k, label]) => (
+              <label key={k}>{label}
+                <input type="number" value={req[k]} step={k === "min_divergence" ? "0.01" : "1"} onChange={num(k)} />
+              </label>
+            ))}
+            <label>category (tag, optional)
+              <input type="text" value={req.category} placeholder="e.g. Politics"
+                onChange={(e) => setReq((r) => ({ ...r, category: e.target.value }))} />
+            </label>
+            <button className="primary" onClick={run} disabled={scanning}>
+              {scanning ? <span className="spinner"></span> : "Run scan"}
+            </button>
+          </div>
+
+          <div className="warn">
+            ⚠ Each scanned market is a live Claude web-search call (takes seconds + costs API spend).
+            Bound it with high min-volume and a small max-markets. EV is computed from the market
+            <b> mid</b> price and an <b>uncalibrated</b> estimate — <b>directional only</b>, not a guaranteed edge.
+          </div>
+
+          {err && <div className="err">{err}</div>}
+          {scanning && (
+            <div className="empty"><span className="spinner" style={{ borderColor: "#888", borderTopColor: "transparent" }}></span>
+              {" "}Scanning… this can take a few minutes. Don't close the tab.</div>
+          )}
+
+          {results && !scanning && (
+            results.length === 0 ? (
+              <div className="empty">No markets cleared the gates. Loosen the filters and rescan.</div>
+            ) : (
+              <div>
+                <div className="meta-line">{results.length} ranked by annualized EV (uncalibrated)</div>
+                <div className="table-wrap">
+                  <table className="scan">
+                    <thead>
+                      <tr>
+                        <th>Side</th><th>Mkt</th><th>Claude</th><th>Div</th>
+                        <th>EV%</th><th>Kelly</th><th>Ann. EV</th><th>Liq</th><th>Closes</th><th>Conf</th>
+                        <th className="q-cell">Question</th><th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {results.map((r) => {
+                        const m = r.market, a = r.analysis;
+                        return (
+                          <tr key={m.id}>
+                            <td>{r.side && <span className={"side " + r.side.toLowerCase()}>{r.side}</span>}</td>
+                            <td>{pct(m.market_prob)}</td>
+                            <td>{pct(a.claude_prob)}</td>
+                            <td>{r.ev != null ? Math.round(r.ev * 100) + "pp" : "—"}</td>
+                            <td>{pct1(r.ev_pct)}</td>
+                            <td>{pct1(r.kelly)}</td>
+                            <td className="ann">{pct1(r.annualized_ev)}</td>
+                            <td>{money(m.liquidity)}</td>
+                            <td>{r.days_to_close != null ? Math.round(r.days_to_close) + "d" : "—"}</td>
+                            <td>{a.confidence || "—"}</td>
+                            <td className="q-cell">{m.question}</td>
+                            <td><a href={tradeUrl(m.slug)} target="_blank" rel="noopener noreferrer">Trade ↗</a></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          )}
+
+          {!results && !scanning && !err && (
+            <div className="empty">Set your gates and hit <b>Run scan</b> to rank markets by expected value.</div>
+          )}
+        </main>
+      );
+    }
+
+    function App() {
+      const [view, setView] = useState("markets");
+      const [markets, setMarkets] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [refreshing, setRefreshing] = useState(false);
+      const [error, setError] = useState(null);
 
       async function load() {
         setLoading(true);
@@ -226,7 +419,6 @@
           setLoading(false);
         }
       }
-
       useEffect(() => { load(); }, []);
 
       async function handleRefresh() {
@@ -243,97 +435,29 @@
       }
 
       function handleAnalyzed(id, analysis) {
-        setMarkets((prev) =>
-          prev.map((it) =>
-            it.market.id === id
-              ? { ...it, latest_analysis: analysis, analysis_count: (it.analysis_count || 0) + 1 }
-              : it
-          )
-        );
+        setMarkets((prev) => prev.map((it) =>
+          it.market.id === id
+            ? { ...it, latest_analysis: analysis, analysis_count: (it.analysis_count || 0) + 1 }
+            : it));
       }
-
-      const allTags = useMemo(() => {
-        const s = new Set();
-        markets.forEach((it) => it.market.tags.forEach((t) => s.add(t)));
-        return [...s].sort();
-      }, [markets]);
-
-      const shown = useMemo(() => {
-        let list = markets.slice();
-        if (tag) list = list.filter((it) => it.market.tags.includes(tag));
-        if (analyzedOnly) list = list.filter((it) => it.latest_analysis);
-        if (minDiv > 0)
-          list = list.filter(
-            (it) =>
-              it.latest_analysis &&
-              it.latest_analysis.edge_magnitude != null &&
-              it.latest_analysis.edge_magnitude * 100 >= minDiv
-          );
-        const div = (it) => (it.latest_analysis && it.latest_analysis.edge_magnitude) || -1;
-        if (sort === "divergence") list.sort((a, b) => div(b) - div(a));
-        else if (sort === "volume") list.sort((a, b) => (b.market.volume_24h || 0) - (a.market.volume_24h || 0));
-        else if (sort === "close")
-          list.sort((a, b) => new Date(a.market.end_date || 8.64e15) - new Date(b.market.end_date || 8.64e15));
-        return list;
-      }, [markets, tag, analyzedOnly, minDiv, sort]);
 
       return (
         <div>
           <header>
             <div className="header-row">
               <h1>Polymarket Research Copilot <small>Claude vs. the market</small></h1>
-              <div className="controls">
-                <label className="ctl">
-                  sort
-                  <select value={sort} onChange={(e) => setSort(e.target.value)}>
-                    <option value="divergence">divergence</option>
-                    <option value="volume">24h volume</option>
-                    <option value="close">time to close</option>
-                  </select>
-                </label>
-                <label className="ctl">
-                  min ±{minDiv}pp
-                  <input type="range" min="0" max="50" value={minDiv}
-                    onChange={(e) => setMinDiv(Number(e.target.value))} />
-                </label>
-                <label className="ctl">
-                  <input type="checkbox" checked={analyzedOnly}
-                    onChange={(e) => setAnalyzedOnly(e.target.checked)} />
-                  analyzed only
-                </label>
-                <button className="primary" onClick={handleRefresh} disabled={refreshing}>
-                  {refreshing ? <span className="spinner"></span> : "Refresh markets"}
-                </button>
+              <div className="tabs">
+                <span className={"tab" + (view === "markets" ? " active" : "")} onClick={() => setView("markets")}>Markets</span>
+                <span className={"tab" + (view === "scan" ? " active" : "")} onClick={() => setView("scan")}>Scan (EV)</span>
               </div>
             </div>
-            {allTags.length > 0 && (
-              <div className="chips">
-                <span className={"chip" + (tag === null ? " active" : "")} onClick={() => setTag(null)}>all</span>
-                {allTags.map((t) => (
-                  <span key={t} className={"chip" + (tag === t ? " active" : "")} onClick={() => setTag(t)}>{t}</span>
-                ))}
-              </div>
-            )}
           </header>
-
-          {error && <div className="meta-line" style={{ color: "var(--red)" }}>{error}</div>}
-          <div className="meta-line">{shown.length} market{shown.length === 1 ? "" : "s"}</div>
-
-          <main>
-            {loading ? (
-              <div className="empty">Loading…</div>
-            ) : markets.length === 0 ? (
-              <div className="empty">No markets yet — hit <b>Refresh markets</b> to load from Polymarket.</div>
-            ) : shown.length === 0 ? (
-              <div className="empty">No markets match the current filters.</div>
-            ) : (
-              <div className="grid">
-                {shown.map((it) => (
-                  <MarketCard key={it.market.id} item={it} onAnalyzed={handleAnalyzed} />
-                ))}
-              </div>
-            )}
-          </main>
+          {view === "markets"
+            ? (loading
+                ? <div className="empty">Loading…</div>
+                : <MarketsView markets={markets} onAnalyzed={handleAnalyzed}
+                    refreshing={refreshing} onRefresh={handleRefresh} error={error} />)
+            : <ScannerView />}
         </div>
       );
     }
