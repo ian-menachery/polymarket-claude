@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Polymarket Research Copilot</title>
+  <!-- React via CDN — no build pipeline (per CLAUDE.md) -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #ffffff; --ink: #1c2024; --muted: #6b7280;
+      --line: #e5e7eb; --accent: #2563eb;
+      --green: #1a7f37; --green-bg: #e8f5ec;
+      --red: #cf222e; --red-bg: #fdeced;
+      --gray: #6b7280; --gray-bg: #f0f1f3;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    header { position: sticky; top: 0; z-index: 5; background: var(--card);
+      border-bottom: 1px solid var(--line); padding: 14px 20px; }
+    .header-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    h1 { font-size: 18px; margin: 0; }
+    h1 small { color: var(--muted); font-weight: 400; font-size: 13px; }
+    .controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      margin-left: auto; }
+    label.ctl { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+    select, input[type=range] { font: inherit; }
+    button { font: inherit; cursor: pointer; border: 1px solid var(--line);
+      background: var(--card); border-radius: 7px; padding: 7px 13px; }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button:disabled { opacity: .55; cursor: default; }
+
+    .chips { display: flex; gap: 7px; flex-wrap: wrap; padding: 10px 20px 0; }
+    .chip { font-size: 12px; padding: 4px 11px; border-radius: 999px;
+      border: 1px solid var(--line); background: var(--card); cursor: pointer; color: var(--muted); }
+    .chip.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+
+    main { padding: 16px 20px 60px; }
+    .meta-line { color: var(--muted); font-size: 13px; margin: 4px 20px 0; }
+    .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+      padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .card .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+    .tag { font-size: 11px; color: var(--muted); background: var(--gray-bg);
+      padding: 2px 8px; border-radius: 6px; }
+    .q { font-weight: 600; font-size: 15px; }
+    .stats { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+    .prob { font-size: 30px; font-weight: 700; line-height: 1; }
+    .prob small { font-size: 13px; font-weight: 400; color: var(--muted); }
+    .kv { font-size: 12.5px; color: var(--muted); }
+    .kv b { color: var(--ink); font-weight: 600; }
+
+    .divergence { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 9px 0; border-top: 1px dashed var(--line); }
+    .arrow { font-size: 14px; }
+    .badge { font-size: 13px; font-weight: 700; padding: 3px 9px; border-radius: 7px; }
+    .badge.up { color: var(--green); background: var(--green-bg); }
+    .badge.down { color: var(--red); background: var(--red-bg); }
+    .badge.fair { color: var(--gray); background: var(--gray-bg); }
+    .edge-label { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+
+    .factors { display: flex; gap: 6px; flex-wrap: wrap; }
+    .factor { font-size: 11.5px; background: #eef2ff; color: #3538cd; padding: 3px 8px; border-radius: 6px; }
+    .summary { font-size: 13.5px; color: #374151; }
+    .conf { font-size: 12px; color: var(--muted); }
+    .disclaimer { font-size: 11px; color: #9aa1ab; font-style: italic; }
+    .err { font-size: 12.5px; color: var(--red); background: var(--red-bg);
+      padding: 6px 9px; border-radius: 7px; }
+    .row-end { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .spinner { width: 13px; height: 13px; border: 2px solid #fff; border-top-color: transparent;
+      border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: -2px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // --- API helpers (all fetch calls live here) ---
+    const API = {
+      async getMarkets() {
+        const r = await fetch("/api/markets");
+        if (!r.ok) throw new Error("Failed to load markets");
+        return r.json();
+      },
+      async refresh() {
+        const r = await fetch("/api/markets/refresh", { method: "POST" });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || "Refresh failed");
+        return d;
+      },
+      async analyze(id) {
+        const r = await fetch(`/api/markets/${id}/analyze`, { method: "POST" });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || "Analysis failed");
+        return d;
+      },
+    };
+
+    // --- formatting helpers ---
+    const pct = (x) => (x == null ? "—" : Math.round(x * 100) + "%");
+    const money = (n) =>
+      n == null ? "—" : "$" + Math.round(n).toLocaleString("en-US");
+    const tradeUrl = (slug) => `https://polymarket.com/event/${slug}`;
+
+    function timeToClose(iso) {
+      if (!iso) return "—";
+      const ms = new Date(iso) - new Date();
+      if (ms <= 0) return "closed";
+      const days = Math.floor(ms / 86400000);
+      if (days >= 1) return `${days}d`;
+      const hrs = Math.floor(ms / 3600000);
+      return `${hrs}h`;
+    }
+
+    // Signed divergence in percentage points, from the derived edge.
+    function divergence(a) {
+      if (!a || a.edge_magnitude == null) return null;
+      const pp = Math.round(a.edge_magnitude * 100);
+      if (a.edge === "underpriced") return { cls: "up", text: `+${pp}pp` };
+      if (a.edge === "overpriced") return { cls: "down", text: `−${pp}pp` };
+      return { cls: "fair", text: "fair" };
+    }
+
+    function MarketCard({ item, onAnalyzed }) {
+      const { market: m, latest_analysis: a, analysis_count } = item;
+      const [busy, setBusy] = useState(false);
+      const [err, setErr] = useState(null);
+
+      async function runAnalyze() {
+        setBusy(true);
+        setErr(null);
+        try {
+          const analysis = await API.analyze(m.id);
+          onAnalyzed(m.id, analysis);
+        } catch (e) {
+          setErr(e.message);
+        } finally {
+          setBusy(false);
+        }
+      }
+
+      const div = divergence(a);
+
+      return (
+        <div className="card">
+          <div className="tags">
+            {m.tags.map((t) => <span className="tag" key={t}>{t}</span>)}
+          </div>
+          <div className="q">{m.question}</div>
+
+          <div className="stats">
+            <div className="prob">{pct(m.market_prob)} <small>YES</small></div>
+            <div className="kv">24h vol <b>{money(m.volume_24h)}</b></div>
+            <div className="kv">liquidity <b>{money(m.liquidity)}</b></div>
+            <div className="kv">closes <b>{timeToClose(m.end_date)}</b></div>
+          </div>
+
+          {a && !a.error && (
+            <div className="divergence">
+              <span className="kv">Market <b>{pct(m.market_prob)}</b></span>
+              <span className="arrow">→</span>
+              <span className="kv">Claude <b>{pct(a.claude_prob)}</b></span>
+              {div && <span className={"badge " + div.cls}>{div.text}</span>}
+              {a.edge && <span className="edge-label">{a.edge}</span>}
+            </div>
+          )}
+
+          {a && a.factors && a.factors.length > 0 && (
+            <div className="factors">
+              {a.factors.map((f, i) => <span className="factor" key={i}>{f}</span>)}
+            </div>
+          )}
+          {a && a.summary && <div className="summary">{a.summary}</div>}
+          {a && a.confidence && (
+            <div className="conf">
+              confidence: <b>{a.confidence}</b>
+              {analysis_count > 1 && <span> · analyzed {analysis_count}×</span>}
+            </div>
+          )}
+          {a && (
+            <div className="disclaimer">Claude's estimate — a research aid, not financial advice.</div>
+          )}
+
+          {err && <div className="err">{err}</div>}
+
+          <div className="row-end">
+            <a href={tradeUrl(m.slug)} target="_blank" rel="noopener noreferrer">Trade ↗</a>
+            <button onClick={runAnalyze} disabled={busy} className={a ? "" : "primary"}>
+              {busy ? <span className="spinner"></span> : a ? "Re-analyze" : "Analyze with Claude ↗"}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    function App() {
+      const [markets, setMarkets] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [refreshing, setRefreshing] = useState(false);
+      const [error, setError] = useState(null);
+
+      const [tag, setTag] = useState(null);
+      const [analyzedOnly, setAnalyzedOnly] = useState(false);
+      const [minDiv, setMinDiv] = useState(0);
+      const [sort, setSort] = useState("divergence");
+
+      async function load() {
+        setLoading(true);
+        setError(null);
+        try {
+          setMarkets(await API.getMarkets());
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      useEffect(() => { load(); }, []);
+
+      async function handleRefresh() {
+        setRefreshing(true);
+        setError(null);
+        try {
+          await API.refresh();
+          await load();
+        } catch (e) {
+          setError(e.message);
+        } finally {
+          setRefreshing(false);
+        }
+      }
+
+      function handleAnalyzed(id, analysis) {
+        setMarkets((prev) =>
+          prev.map((it) =>
+            it.market.id === id
+              ? { ...it, latest_analysis: analysis, analysis_count: (it.analysis_count || 0) + 1 }
+              : it
+          )
+        );
+      }
+
+      const allTags = useMemo(() => {
+        const s = new Set();
+        markets.forEach((it) => it.market.tags.forEach((t) => s.add(t)));
+        return [...s].sort();
+      }, [markets]);
+
+      const shown = useMemo(() => {
+        let list = markets.slice();
+        if (tag) list = list.filter((it) => it.market.tags.includes(tag));
+        if (analyzedOnly) list = list.filter((it) => it.latest_analysis);
+        if (minDiv > 0)
+          list = list.filter(
+            (it) =>
+              it.latest_analysis &&
+              it.latest_analysis.edge_magnitude != null &&
+              it.latest_analysis.edge_magnitude * 100 >= minDiv
+          );
+        const div = (it) => (it.latest_analysis && it.latest_analysis.edge_magnitude) || -1;
+        if (sort === "divergence") list.sort((a, b) => div(b) - div(a));
+        else if (sort === "volume") list.sort((a, b) => (b.market.volume_24h || 0) - (a.market.volume_24h || 0));
+        else if (sort === "close")
+          list.sort((a, b) => new Date(a.market.end_date || 8.64e15) - new Date(b.market.end_date || 8.64e15));
+        return list;
+      }, [markets, tag, analyzedOnly, minDiv, sort]);
+
+      return (
+        <div>
+          <header>
+            <div className="header-row">
+              <h1>Polymarket Research Copilot <small>Claude vs. the market</small></h1>
+              <div className="controls">
+                <label className="ctl">
+                  sort
+                  <select value={sort} onChange={(e) => setSort(e.target.value)}>
+                    <option value="divergence">divergence</option>
+                    <option value="volume">24h volume</option>
+                    <option value="close">time to close</option>
+                  </select>
+                </label>
+                <label className="ctl">
+                  min ±{minDiv}pp
+                  <input type="range" min="0" max="50" value={minDiv}
+                    onChange={(e) => setMinDiv(Number(e.target.value))} />
+                </label>
+                <label className="ctl">
+                  <input type="checkbox" checked={analyzedOnly}
+                    onChange={(e) => setAnalyzedOnly(e.target.checked)} />
+                  analyzed only
+                </label>
+                <button className="primary" onClick={handleRefresh} disabled={refreshing}>
+                  {refreshing ? <span className="spinner"></span> : "Refresh markets"}
+                </button>
+              </div>
+            </div>
+            {allTags.length > 0 && (
+              <div className="chips">
+                <span className={"chip" + (tag === null ? " active" : "")} onClick={() => setTag(null)}>all</span>
+                {allTags.map((t) => (
+                  <span key={t} className={"chip" + (tag === t ? " active" : "")} onClick={() => setTag(t)}>{t}</span>
+                ))}
+              </div>
+            )}
+          </header>
+
+          {error && <div className="meta-line" style={{ color: "var(--red)" }}>{error}</div>}
+          <div className="meta-line">{shown.length} market{shown.length === 1 ? "" : "s"}</div>
+
+          <main>
+            {loading ? (
+              <div className="empty">Loading…</div>
+            ) : markets.length === 0 ? (
+              <div className="empty">No markets yet — hit <b>Refresh markets</b> to load from Polymarket.</div>
+            ) : shown.length === 0 ? (
+              <div className="empty">No markets match the current filters.</div>
+            ) : (
+              <div className="grid">
+                {shown.map((it) => (
+                  <MarketCard key={it.market.id} item={it} onAnalyzed={handleAnalyzed} />
+                ))}
+              </div>
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
