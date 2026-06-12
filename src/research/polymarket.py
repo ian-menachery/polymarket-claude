@@ -18,7 +18,7 @@ import os
 import re
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -243,26 +243,48 @@ def fetch_resolution(market_id: str) -> bool | None:
     return _detect_resolution(raw)
 
 
-def _best_price(levels: list, pick) -> float | None:
-    """Best price from a list of {price,size} levels via ``pick`` (max for bids,
-    min for asks). Order-independent — does not trust the array's sort."""
-    prices = []
+class BookTop(NamedTuple):
+    """Top of the CLOB book: best prices and the fillable size (shares) at each."""
+
+    best_bid: float
+    best_ask: float
+    bid_depth: float  # shares resting at best_bid
+    ask_depth: float  # shares resting at best_ask
+
+
+def _best_level(levels: list, pick) -> tuple[float | None, float | None]:
+    """(best_price, depth) from {price,size} levels via ``pick`` (max bids / min asks).
+
+    Depth = total shares across every level at the best price (summed, so duplicate
+    or unaggregated price levels are handled). Order-independent; a level with a bad
+    size contributes 0. Returns (None, None) if no usable price level.
+    """
+    parsed: list[tuple[float, float]] = []
     for lvl in levels or []:
         try:
             p = float(lvl["price"])
         except (KeyError, TypeError, ValueError):
             continue
-        if 0.0 <= p <= 1.0:
-            prices.append(p)
-    return pick(prices) if prices else None
+        if not (0.0 <= p <= 1.0):
+            continue
+        try:
+            size = float(lvl.get("size"))
+        except (TypeError, ValueError):
+            size = 0.0
+        parsed.append((p, size))
+    if not parsed:
+        return None, None
+    best = pick(p for p, _ in parsed)
+    depth = sum(size for p, size in parsed if p == best)
+    return best, depth
 
 
-def fetch_best_bid_ask(yes_token_id: str) -> tuple[float, float] | None:
-    """Top-of-book ``(best_bid, best_ask)`` for the YES CLOB token, or None.
+def fetch_best_bid_ask(yes_token_id: str) -> BookTop | None:
+    """Top-of-book ``BookTop(best_bid, best_ask, bid_depth, ask_depth)`` or None.
 
     Reads the order book from ``GET /book?token_id=…``. Best bid = highest bid
-    price, best ask = lowest ask price (computed order-independently, not relying
-    on the array's sort). Returns None on HTTP/parse failure or a one-sided book
+    price, best ask = lowest ask price (order-independent); depths are the shares
+    resting at those prices. Returns None on HTTP/parse failure or a one-sided book
     (missing a usable bid or ask) so the caller can fall back to the mid price.
     """
     try:
@@ -273,11 +295,11 @@ def fetch_best_bid_ask(yes_token_id: str) -> tuple[float, float] | None:
     except (httpx.HTTPError, ValueError, TypeError):
         return None
 
-    best_bid = _best_price(body.get("bids"), max)
-    best_ask = _best_price(body.get("asks"), min)
+    best_bid, bid_depth = _best_level(body.get("bids"), max)
+    best_ask, ask_depth = _best_level(body.get("asks"), min)
     if best_bid is None or best_ask is None:
         return None
-    return best_bid, best_ask
+    return BookTop(best_bid, best_ask, bid_depth, ask_depth)
 
 
 def fetch_all_active(max_markets: int = 500) -> list[Market]:
