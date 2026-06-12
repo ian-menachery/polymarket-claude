@@ -106,6 +106,7 @@
       border: 1px solid #f2d699; padding: 5px 9px; border-radius: 7px; }
     .v-holds   { font-size: 11px; font-weight: 700; color: var(--green); background: var(--green-bg); padding: 2px 7px; border-radius: 6px; cursor: help; }
     .v-refuted { font-size: 11px; font-weight: 700; color: var(--red); background: var(--red-bg); padding: 2px 7px; border-radius: 6px; cursor: help; }
+    .v-model   { display: block; font-size: 9px; color: var(--muted); margin-top: 2px; }
 
     /* Calibration */
     .cal-head { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
@@ -420,7 +421,7 @@
             ) : (
               <div>
                 <div className="meta-line">{results.length} ranked by annualized EV {cal && cal.calibrated ? "(calibrated)" : "(uncalibrated)"} · basis: <b>exec</b> = live bid/ask, <b>mid</b> = mid-price fallback · Bid/Ask show price ·fillable shares at that level
-                  {req.refute_top > 0 ? " · verdict = same-model skeptical refutation of the top " + req.refute_top : ""}</div>
+                  {req.refute_top > 0 ? " · verdict = skeptical refutation of the top " + req.refute_top + " (model shown under each verdict)" : ""}</div>
                 <div className="table-wrap">
                   <table className="scan">
                     <thead>
@@ -451,10 +452,13 @@
                             <td>{(() => {
                               const rf = r.refutation;
                               if (!rf) return "—";
-                              if (!rf.verdict) return <span className="basis-mid" title={rf.error || ""}>?</span>;
-                              const tip = `refuter ${pct(rf.refuter_prob)}` + (rf.counterpoints && rf.counterpoints[0] ? " · " + rf.counterpoints[0] : "");
-                              return <span className={rf.verdict === "holds" ? "v-holds" : "v-refuted"} title={tip}>
-                                {rf.verdict}{rf.resolution_risk ? " ⚠" : ""}</span>;
+                              const model = rf.refuter_model || "";
+                              if (!rf.verdict) return <span className="basis-mid" title={(model ? model + ": " : "") + (rf.error || "")}>?</span>;
+                              const tip = `refuter ${model ? model + " " : ""}${pct(rf.refuter_prob)}` + (rf.counterpoints && rf.counterpoints[0] ? " · " + rf.counterpoints[0] : "");
+                              return <span title={tip}>
+                                <span className={rf.verdict === "holds" ? "v-holds" : "v-refuted"}>
+                                  {rf.verdict}{rf.resolution_risk ? " ⚠" : ""}</span>
+                                {model ? <span className="v-model">{model}</span> : null}</span>;
                             })()}</td>
                             <td>{money(m.liquidity)}</td>
                             <td>{r.days_to_close != null ? Math.round(r.days_to_close) + "d" : "—"}</td>
