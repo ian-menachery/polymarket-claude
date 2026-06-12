@@ -326,6 +326,12 @@ def get_resolved_pairs_by_model() -> dict[str, list[tuple[float, bool]]]:
     return out
 
 
+def count_analyses() -> int:
+    """Total analysis rows — used to measure fresh analyses created during a scan."""
+    with _conn() as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM analyses").fetchone()[0])
+
+
 def get_all_resolved_analyses() -> list[Analysis]:
     """All resolved analyses (for CSV export to the calibration tracker)."""
     with _conn() as conn:

@@ -141,3 +141,22 @@ def scan(req: ScanRequest) -> list[ScanResult]:
             ref.verdict = _refute_verdict(r.side, r.market.market_prob, recal.apply(ref.refuter_prob))
         r.refutation = ref  # flag-only; edges are not dropped
     return results
+
+
+def sweep_resolutions() -> int:
+    """Record resolutions for analyzed-but-unresolved markets; return the count.
+
+    One Gamma call per market (fine at MVP scale). Resolutions are lost once a market
+    drops out of the active fetch, so this runs on every refresh / scheduled scan to
+    capture them while they're live. Per-market errors are swallowed (next sweep retries).
+    """
+    resolved = 0
+    for market_id in db.get_unresolved_analyzed_market_ids():
+        try:
+            outcome = polymarket.fetch_resolution(market_id)
+        except Exception:  # noqa: BLE001 — transient; next sweep retries
+            continue
+        if outcome is not None:
+            db.mark_resolution(market_id, outcome)
+            resolved += 1
+    return resolved
