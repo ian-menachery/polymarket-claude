@@ -92,6 +92,7 @@ class ScanResult(BaseModel):
 
     market: Market
     analysis: Analysis
+    calibrated_prob: float | None = None  # claude_prob after recalibration (raw if uncalibrated)
     side: Literal["YES", "NO"] | None = None
     ev: float | None = None  # per-share edge on the favorable side = |claude - market|
     ev_pct: float | None = None  # ev / price_paid

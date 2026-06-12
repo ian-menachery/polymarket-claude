@@ -16,8 +16,8 @@ import os
 import time
 from datetime import datetime, timezone
 
-from research import analyzer, db, polymarket
-from research.models import Analysis, Market, ScanRequest, ScanResult
+from research import analyzer, calibration, db, polymarket
+from research.models import Market, ScanRequest, ScanResult
 
 
 def _days_to_close(market: Market) -> float | None:
@@ -26,20 +26,25 @@ def _days_to_close(market: Market) -> float | None:
     return (market.end_date - datetime.now(timezone.utc)).total_seconds() / 86400.0
 
 
-def _ev_fields(market: Market, analysis: Analysis, min_days: float) -> dict:
-    """EV figures on the favorable side. Annualized EV is None below the days floor."""
-    mp, cp, mag = market.market_prob, analysis.claude_prob, analysis.edge_magnitude
+def _ev_fields(market: Market, prob: float | None, min_days: float) -> dict:
+    """EV figures on the favorable side, computed from the (calibrated) ``prob``.
+
+    Side + magnitude derive from ``|prob - market_prob|`` — so the divergence the
+    scanner gates and ranks on is the *calibrated* one, not the raw edge. Annualized
+    EV is None below the days floor.
+    """
+    mp = market.market_prob
     blank = {"side": None, "ev": None, "ev_pct": None, "kelly": None,
              "annualized_ev": None, "days_to_close": _days_to_close(market)}
-    if mp is None or cp is None or mag is None:
+    if mp is None or prob is None:
         return blank
 
-    side = "YES" if cp > mp else "NO"
+    side = "YES" if prob > mp else "NO"
     price_paid = mp if side == "YES" else (1.0 - mp)
     if not (0.0 < price_paid < 1.0):
         return blank
 
-    ev = mag  # = |claude - market|, the per-share edge on the chosen side
+    ev = abs(prob - mp)  # per-share edge on the chosen side, using the calibrated prob
     ev_pct = ev / price_paid
     kelly = ev / (1.0 - price_paid)
     dtc = _days_to_close(market)
@@ -50,6 +55,7 @@ def _ev_fields(market: Market, analysis: Analysis, min_days: float) -> dict:
 
 def scan(req: ScanRequest) -> list[ScanResult]:
     """Run a batch EV scan and return results sorted by annualized EV (desc)."""
+    recal = calibration.build_recalibrator()  # fit once; apply per market below
     markets = polymarket.fetch_all_active(max_markets=req.max_markets)
     db.upsert_markets(markets)  # persist fetched markets (also satisfies the analyses FK)
 
@@ -79,15 +85,16 @@ def scan(req: ScanRequest) -> list[ScanResult]:
             db.save_analysis(analysis)
             time.sleep(delay)
 
-        if analysis is None or analysis.edge_magnitude is None:
-            continue
-        if analysis.edge_magnitude < req.min_divergence:
+        if analysis is None or analysis.claude_prob is None:
             continue
 
-        ev = _ev_fields(m, analysis, req.min_days_to_close)
+        calibrated_p = recal.apply(analysis.claude_prob)
+        ev = _ev_fields(m, calibrated_p, req.min_days_to_close)
+        if ev["ev"] is None or ev["ev"] < req.min_divergence:  # gate on CALIBRATED divergence
+            continue
         if ev["annualized_ev"] is None:  # failed the days floor (defensive)
             continue
-        results.append(ScanResult(market=m, analysis=analysis, **ev))
+        results.append(ScanResult(market=m, analysis=analysis, calibrated_prob=calibrated_p, **ev))
 
     results.sort(key=lambda r: r.annualized_ev or -1.0, reverse=True)
     return results
