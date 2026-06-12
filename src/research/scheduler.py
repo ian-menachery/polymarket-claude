@@ -54,8 +54,13 @@ def run_once() -> dict:
     with _run_lock:  # serialize DB-writing runs (vs. the resolution-sweep timer)
         before = db.count_analyses()
         edges_found = 0
+        signals_logged = 0
+        alerts_emitted = 0
         try:
-            edges_found = len(scanner.scan(_build_request()))
+            results = scanner.scan(_build_request())
+            edges_found = len(results)
+            signals_logged = scanner.persist_signals(results)
+            alerts_emitted = scanner.emit_alerts(results)
         except Exception as e:  # noqa: BLE001
             errors.append(f"scan: {type(e).__name__}: {e}")
         markets_scanned = max(0, db.count_analyses() - before)
@@ -70,6 +75,8 @@ def run_once() -> dict:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "markets_scanned": markets_scanned,
         "edges_found": edges_found,
+        "signals_logged": signals_logged,
+        "alerts_emitted": alerts_emitted,
         "resolutions_captured": resolutions_captured,
         "errors": errors,
     }
@@ -82,8 +89,9 @@ def run_once() -> dict:
         _log.warning("scan_log write failed: %s", e)
 
     _log.info(
-        "auto-scan: scanned=%d edges=%d resolutions=%d errors=%d",
-        markets_scanned, edges_found, resolutions_captured, len(errors),
+        "auto-scan: scanned=%d edges=%d signals=%d alerts=%d resolutions=%d errors=%d",
+        markets_scanned, edges_found, signals_logged, alerts_emitted,
+        resolutions_captured, len(errors),
     )
     return record
 

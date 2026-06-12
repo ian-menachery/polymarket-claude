@@ -12,13 +12,18 @@ and Phase 3.5 (executable bid/ask). Treat the ranking as "where to look," not
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import time
+import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
 from research import analyzer, calibration, db, polymarket
-from research.models import Market, ScanRequest, ScanResult
+from research.models import Market, ScanRequest, ScanResult, Signal
 
+_log = logging.getLogger(__name__)
 
 REFUTE_BAND = 0.03  # refuter must still diverge from the market by this much for the edge to "hold"
 
@@ -182,4 +187,174 @@ def sweep_resolutions() -> int:
         if outcome is not None:
             db.mark_resolution(market_id, outcome)
             resolved += 1
+            # Settle any open forward signals on this market. P&L is modeled at the
+            # recorded VWAP fill: a winning side pays (1 - price_paid) per share, a
+            # losing side forfeits price_paid per share. (Formula lives here, not db.)
+            for sig in db.get_open_signals_for_market(market_id):
+                won = (sig.side == "YES") == outcome
+                pnl = sig.fill_shares * (1.0 - sig.price_paid) if won else -sig.fill_shares * sig.price_paid
+                db.resolve_signal(sig.id, outcome, pnl)
     return resolved
+
+
+def persist_signals(results: list[ScanResult]) -> int:
+    """Log the actionable subset of a scan as forward signals; return the count saved.
+
+    Actionable = priced off the live book (``executable``) with a positive per-share
+    edge above ``SIGNAL_MIN_EV`` (env, default 0.0). Deduped against open signals so at
+    most one open position exists per ``(market_id, side)`` — including within this batch.
+    Prices/EV are frozen here; realized P&L is filled in by ``sweep_resolutions``.
+    """
+    min_ev = float(os.getenv("SIGNAL_MIN_EV", "0.0"))
+    open_keys = db.get_open_signal_keys()
+    saved = 0
+    for r in results:
+        if not (r.executable and r.ev is not None and r.ev > min_ev):
+            continue
+        key = (r.market.id, r.side)
+        if key in open_keys:
+            continue
+        db.save_signal(Signal(
+            market_id=r.market.id,
+            question=r.market.question,
+            model=r.analysis.model,
+            side=r.side,
+            calibrated_prob=r.calibrated_prob,
+            market_prob=r.market.market_prob,
+            price_paid=r.price_paid,
+            ev=r.ev,
+            ev_pct=r.ev_pct,
+            kelly=r.kelly,
+            annualized_ev=r.annualized_ev,
+            fill_shares=r.fill_shares,
+            target_position_usd=r.target_position_usd,
+            days_to_close=r.days_to_close,
+            adversarial_verdict=r.refutation.verdict if r.refutation else None,
+            refuter_model=r.refutation.refuter_model if r.refutation else None,
+        ))
+        open_keys.add(key)  # so a repeat (market, side) in the same batch isn't double-logged
+        saved += 1
+    return saved
+
+
+# --- high-divergence alerts ----------------------------------------------------
+
+
+def _alerts_path() -> Path:
+    override = os.getenv("ALERT_LOG_PATH")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parents[2] / "data" / "alerts.jsonl"
+
+
+def _post_webhook(url: str, payload: dict) -> None:
+    """Best-effort POST of an alert via stdlib urllib (httpx is confined to polymarket.py).
+
+    Fire-and-forget: short timeout, all errors swallowed, so a flaky webhook never
+    delays or breaks a scan.
+    """
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}
+        )
+        urllib.request.urlopen(req, timeout=5).close()
+    except Exception:  # noqa: BLE001 — best-effort; never raise
+        pass
+
+
+def emit_alerts(results: list[ScanResult]) -> int:
+    """Write a structured alert per actionable, high-divergence edge; return the count.
+
+    Alerts on edges whose calibrated estimate diverges from the market mid by at least
+    ``ALERT_MIN_DIVERGENCE`` (env, default 0.15) and that are actionable (``executable``
+    with ``ev > 0``). Dedup: skip a market alerted within ``ALERT_COOLDOWN_HOURS`` (env,
+    default 24) — read from the existing ``alerts.jsonl``. Each new alert appends one JSON
+    line, logs a warning, and — if ``ALERT_WEBHOOK_URL`` is set — fires a best-effort POST.
+    """
+    min_div = float(os.getenv("ALERT_MIN_DIVERGENCE", "0.15"))
+    cooldown_h = float(os.getenv("ALERT_COOLDOWN_HOURS", "24"))
+    webhook = os.getenv("ALERT_WEBHOOK_URL")
+    path = _alerts_path()
+
+    # Cooldown index: most recent alert time per market (whole-file read, like read_alerts).
+    recent: dict[str, datetime] = {}
+    for rec in read_alerts(limit=10_000):
+        ts, mid = rec.get("timestamp"), rec.get("market_id")
+        if not ts or not mid:
+            continue
+        try:
+            t = datetime.fromisoformat(ts)
+        except ValueError:
+            continue
+        if mid not in recent or t > recent[mid]:
+            recent[mid] = t
+
+    now = datetime.now(timezone.utc)
+    new_records: list[dict] = []
+    for r in results:
+        mp = r.market.market_prob
+        if mp is None or r.calibrated_prob is None:
+            continue
+        divergence = r.calibrated_prob - mp
+        if abs(divergence) < min_div:
+            continue
+        if not (r.executable and r.ev is not None and r.ev > 0):
+            continue
+        last = recent.get(r.market.id)
+        if last is not None and (now - last).total_seconds() < cooldown_h * 3600.0:
+            continue
+        rec = {
+            "timestamp": now.isoformat(),
+            "market_id": r.market.id,
+            "question": r.market.question,
+            "slug": r.market.slug,
+            "side": r.side,
+            "calibrated_prob": r.calibrated_prob,
+            "market_prob": mp,
+            "divergence": divergence,
+            "ev": r.ev,
+            "annualized_ev": r.annualized_ev,
+            "price_paid": r.price_paid,
+            "trade_url": f"https://polymarket.com/event/{r.market.slug}",
+        }
+        new_records.append(rec)
+        recent[r.market.id] = now  # dedup within this batch too
+        _log.warning(
+            "high-divergence edge: %s %s div=%+.2f ev=%.3f (%s)",
+            r.side, r.market.question, divergence, r.ev, rec["trade_url"],
+        )
+        if webhook:
+            _post_webhook(webhook, rec)
+
+    if new_records:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                for rec in new_records:
+                    f.write(json.dumps(rec) + "\n")
+        except OSError as e:
+            _log.warning("alerts.jsonl write failed: %s", e)
+    return len(new_records)
+
+
+def read_alerts(limit: int = 50) -> list[dict]:
+    """Newest-first tail of alerts.jsonl (skip blank/malformed lines)."""
+    path = _alerts_path()
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    out.reverse()
+    return out[:limit]
