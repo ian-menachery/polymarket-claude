@@ -132,6 +132,40 @@ class ScanResult(BaseModel):
     refutation: Refutation | None = None  # skeptical second pass (top edges only; None otherwise)
 
 
+class Signal(BaseModel):
+    """A forward, lookahead-free record of an actionable edge the scanner surfaced.
+
+    Persisted at scan time from a ``ScanResult`` (executable, EV past the floor) so the
+    tool's own calls can be scored once the market resolves — the real calibration
+    flywheel, distinct from the crowd backtest. Prices/EV are frozen at log time and
+    never updated; ``resolved``/``resolution``/``pnl`` are filled in by the resolution
+    sweep. ``pnl`` is computed from the modeled VWAP fill (``fill_shares`` * payoff),
+    not a notional.
+    """
+
+    id: int | None = None
+    market_id: str
+    question: str
+    created_at: datetime = Field(default_factory=_utcnow)
+    model: str | None = None  # the LLM whose estimate drove this signal (per-model attribution)
+    side: Literal["YES", "NO"]
+    calibrated_prob: float  # our estimate on the chosen side at log time
+    market_prob: float  # market YES mid at log time
+    price_paid: float  # VWAP fill cost/share on the chosen side
+    ev: float | None = None  # executable per-share edge at log time
+    ev_pct: float | None = None
+    kelly: float | None = None
+    annualized_ev: float | None = None
+    fill_shares: float  # shares the VWAP walk filled toward the target
+    target_position_usd: float  # USD position the VWAP priced
+    days_to_close: float | None = None
+    adversarial_verdict: Literal["holds", "refuted"] | None = None  # from refutation, None if not run
+    refuter_model: str | None = None  # which model ran the refutation (None if not run)
+    resolved: bool | None = None
+    resolution: bool | None = None  # True=YES won, False=NO won
+    pnl: float | None = None  # realized $ on resolution (modeled VWAP fill); None while open
+
+
 class CalibrationBin(BaseModel):
     """One reliability bin: predicted mean vs empirical resolve-rate."""
 

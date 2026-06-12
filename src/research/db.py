@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from research.models import Analysis, Market, MarketWithAnalysis
+from research.models import Analysis, Market, MarketWithAnalysis, Signal
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS markets (
@@ -59,6 +59,34 @@ CREATE TABLE IF NOT EXISTS analyses (
 CREATE INDEX IF NOT EXISTS idx_analyses_market_id  ON analyses(market_id);
 CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analyses_edge_mag   ON analyses(edge_magnitude DESC);
+
+CREATE TABLE IF NOT EXISTS signals (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id           TEXT    NOT NULL,
+    question            TEXT    NOT NULL,
+    created_at          TEXT    NOT NULL,
+    model               TEXT,
+    side                TEXT    NOT NULL,    -- 'YES' or 'NO'
+    calibrated_prob     REAL    NOT NULL,    -- our estimate on the chosen side at log time
+    market_prob         REAL    NOT NULL,    -- market YES mid at log time
+    price_paid          REAL    NOT NULL,    -- VWAP fill cost/share on the chosen side
+    ev                  REAL,
+    ev_pct              REAL,
+    kelly               REAL,
+    annualized_ev       REAL,
+    fill_shares         REAL    NOT NULL,    -- shares the VWAP walk filled toward the target
+    target_position_usd REAL    NOT NULL,
+    days_to_close       REAL,
+    adversarial_verdict TEXT    DEFAULT NULL,  -- 'holds'/'refuted' from refutation, NULL if not run
+    refuter_model       TEXT    DEFAULT NULL,
+    resolved            INTEGER DEFAULT NULL,
+    resolution          INTEGER DEFAULT NULL,  -- 1=YES won, 0=NO won
+    pnl                 REAL    DEFAULT NULL,   -- realized $ on resolution (modeled VWAP fill)
+    FOREIGN KEY (market_id) REFERENCES markets(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signals_market_id  ON signals(market_id);
+CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at DESC);
 """
 
 STALE_THRESHOLD = 0.04  # current price moving more than this (4pp) since analysis = stale
@@ -70,6 +98,11 @@ _MARKET_COLUMNS = (
 _ANALYSIS_COLUMNS = (
     "market_id, created_at, model, claude_prob, market_prob_at_analysis, "
     "confidence, edge, edge_magnitude, factors, summary, resolved, resolution, error"
+)
+_SIGNAL_COLUMNS = (
+    "market_id, question, created_at, model, side, calibrated_prob, market_prob, "
+    "price_paid, ev, ev_pct, kelly, annualized_ev, fill_shares, target_position_usd, "
+    "days_to_close, adversarial_verdict, refuter_model, resolved, resolution, pnl"
 )
 
 
@@ -145,6 +178,35 @@ def _row_to_analysis(row: sqlite3.Row) -> Analysis:
     data = dict(row)
     data["factors"] = json.loads(data["factors"]) if data["factors"] else []
     return Analysis(**data)
+
+
+def _signal_to_row(s: Signal) -> tuple:
+    return (
+        s.market_id,
+        s.question,
+        s.created_at.isoformat(),
+        s.model,
+        s.side,
+        s.calibrated_prob,
+        s.market_prob,
+        s.price_paid,
+        s.ev,
+        s.ev_pct,
+        s.kelly,
+        s.annualized_ev,
+        s.fill_shares,
+        s.target_position_usd,
+        s.days_to_close,
+        s.adversarial_verdict,
+        s.refuter_model,
+        int(s.resolved) if s.resolved is not None else None,
+        int(s.resolution) if s.resolution is not None else None,
+        s.pnl,
+    )
+
+
+def _row_to_signal(row: sqlite3.Row) -> Signal:
+    return Signal(**dict(row))
 
 
 # --- schema --------------------------------------------------------------------
@@ -337,3 +399,80 @@ def get_all_resolved_analyses() -> list[Analysis]:
     with _conn() as conn:
         rows = conn.execute("SELECT * FROM analyses WHERE resolved = 1 ORDER BY id").fetchall()
     return [_row_to_analysis(r) for r in rows]
+
+
+# --- signals (forward edge log) ------------------------------------------------
+
+
+def save_signal(sig: Signal) -> int:
+    """Append a forward signal (always INSERT, never UPDATE). Returns the new row id."""
+    placeholders = ", ".join(["?"] * 20)
+    with _conn() as conn:
+        cur = conn.execute(
+            f"INSERT INTO signals ({_SIGNAL_COLUMNS}) VALUES ({placeholders})",
+            _signal_to_row(sig),
+        )
+        return int(cur.lastrowid)
+
+
+def get_open_signal_keys() -> set[tuple[str, str]]:
+    """``(market_id, side)`` pairs with an open (unresolved) signal — write-time dedup."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT market_id, side FROM signals WHERE resolved IS NULL"
+        ).fetchall()
+    return {(r["market_id"], r["side"]) for r in rows}
+
+
+def get_open_signals_for_market(market_id: str) -> list[Signal]:
+    """Open (unresolved) signals for a market — the rows the resolution sweep settles."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM signals WHERE market_id = ? AND resolved IS NULL ORDER BY id",
+            (market_id,),
+        ).fetchall()
+    return [_row_to_signal(r) for r in rows]
+
+
+def resolve_signal(signal_id: int, outcome: bool, pnl: float) -> None:
+    """Settle one open signal: set resolved/resolution/pnl. The one sanctioned UPDATE.
+
+    Never touches the recorded prices/EV — those stay frozen at log time.
+    """
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE signals SET resolved = 1, resolution = ?, pnl = ? WHERE id = ?",
+            (1 if outcome else 0, pnl, signal_id),
+        )
+
+
+def get_signals(limit: int = 200) -> list[Signal]:
+    """Signals newest first, capped at ``limit``."""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM signals ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [_row_to_signal(r) for r in rows]
+
+
+def signal_summary() -> dict:
+    """Aggregate counts and realized P&L over all signals (reads only)."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT "
+            "COUNT(*) AS total, "
+            "SUM(CASE WHEN resolved IS NULL THEN 1 ELSE 0 END) AS open, "
+            "SUM(CASE WHEN resolved = 1 THEN 1 ELSE 0 END) AS resolved, "
+            "SUM(CASE WHEN resolved = 1 AND pnl > 0 THEN 1 ELSE 0 END) AS wins, "
+            "SUM(CASE WHEN resolved = 1 THEN pnl ELSE 0 END) AS realized_pnl, "
+            "AVG(ev) AS avg_ev "
+            "FROM signals"
+        ).fetchone()
+    return {
+        "total": int(row["total"] or 0),
+        "open": int(row["open"] or 0),
+        "resolved": int(row["resolved"] or 0),
+        "wins": int(row["wins"] or 0),
+        "realized_pnl": float(row["realized_pnl"]) if row["realized_pnl"] is not None else 0.0,
+        "avg_ev": float(row["avg_ev"]) if row["avg_ev"] is not None else None,
+    }
