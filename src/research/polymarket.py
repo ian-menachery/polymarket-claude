@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from research.models import Market
 
 DEFAULT_BASE_URL = "https://gamma-api.polymarket.com"
+CLOB_BASE_URL = "https://clob.polymarket.com"
 
 # Polymarket sometimes emits bare timezone offsets (e.g. `+00` instead of
 # `+00:00`), which datetime.fromisoformat rejects.
@@ -240,6 +241,35 @@ def fetch_resolution(market_id: str) -> bool | None:
     if raw is None:
         return None
     return _detect_resolution(raw)
+
+
+def _clob_price(client: httpx.Client, token_id: str, side: str) -> float | None:
+    """Best price on one side of the CLOB book, or None if unavailable.
+
+    GOTCHA: the endpoint is named by *book side*, not by your action —
+    ``side=buy`` returns the best BID, ``side=sell`` returns the best ASK
+    (verified: midpoint == (buy + sell) / 2). To BUY YES you pay the ASK
+    (``side=sell``); to bet NO you transact at the BID (``side=buy``).
+    """
+    try:
+        r = client.get("/price", params={"token_id": token_id, "side": side})
+        r.raise_for_status()
+        price = (r.json() or {}).get("price")
+        return float(price) if price not in (None, "") else None
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+
+
+def fetch_best_bid_ask(yes_token_id: str) -> tuple[float | None, float | None]:
+    """(best_bid, best_ask) for the YES CLOB token; (None, None) on failure.
+
+    Top-of-book only. Best bid = highest price to sell into; best ask = lowest
+    price to buy at. Either may be None for an illiquid/one-sided book.
+    """
+    with httpx.Client(base_url=CLOB_BASE_URL, timeout=15.0) as client:
+        best_bid = _clob_price(client, yes_token_id, "buy")   # book's buy side = bid
+        best_ask = _clob_price(client, yes_token_id, "sell")  # book's sell side = ask
+    return best_bid, best_ask
 
 
 def fetch_all_active(max_markets: int = 500) -> list[Market]:
