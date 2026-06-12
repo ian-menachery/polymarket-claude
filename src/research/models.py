@@ -95,11 +95,14 @@ class ScanResult(BaseModel):
     analysis: Analysis
     calibrated_prob: float | None = None  # claude_prob after recalibration (raw if uncalibrated)
     side: Literal["YES", "NO"] | None = None
-    ev: float | None = None  # per-share edge on the favorable side = |claude - market|
+    ev: float | None = None  # executable per-share edge on the favorable side
     ev_pct: float | None = None  # ev / price_paid
     kelly: float | None = None  # full Kelly fraction = ev / (1 - price_paid); size with a fraction
     annualized_ev: float | None = None  # ev_pct * 365 / days_to_close (None below the days floor)
     days_to_close: float | None = None
+    best_bid: float | None = None  # CLOB best bid for the YES token (top of book)
+    best_ask: float | None = None  # CLOB best ask for the YES token (top of book)
+    price_paid: float | None = None  # executable cost per share on the chosen side
 
 
 class CalibrationBin(BaseModel):
