@@ -71,7 +71,12 @@ polymarket-research/
 
 ## Phase awareness
 Phases are in ROADMAP.md. Always know which phase we're in.
-Current phase: **Phase 1 — MVP** (not started).
+Current phase: **Phase 5 — Advanced** (in progress). Phases 1–4 are complete (EV scanner,
+persistence/history, calibration + resolution sweep). Phase 5 is mostly built: scheduled background
+scanning (stdlib threading.Timer, not APScheduler), portfolio simulator, crowd backtesting,
+multi-model comparison (cross-model adversarial refutation), and webhook/forward-signal alerting
+(forward signal log + high-divergence alerts). Note: the scanner is a Flask/httpx-sync stack, not the
+FastAPI/`main.py` named in ROADMAP.md's early checklists.
 
 ## Relationship to calibration tracker
 This is a separate project. The `polymarket.py` module here borrows patterns from the calibration tracker's `polymarket/` module (API normalization, gotchas) but does not import from it directly. The shared data contract is documented in CALIBRATION_NOTES.md.
