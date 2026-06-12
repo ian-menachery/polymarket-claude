@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS analyses (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     market_id      TEXT    NOT NULL,
     created_at     TEXT    NOT NULL,
+    model          TEXT,                -- which LLM produced the estimate (per-model calibration)
     claude_prob    REAL,
     confidence     TEXT,
     edge           TEXT,
@@ -64,7 +65,7 @@ _MARKET_COLUMNS = (
     "yes_token_id, end_date, tags, description, fetched_at"
 )
 _ANALYSIS_COLUMNS = (
-    "market_id, created_at, claude_prob, confidence, edge, edge_magnitude, "
+    "market_id, created_at, model, claude_prob, confidence, edge, edge_magnitude, "
     "factors, summary, resolved, resolution, error"
 )
 
@@ -123,6 +124,7 @@ def _analysis_to_row(a: Analysis) -> tuple:
     return (
         a.market_id,
         a.created_at.isoformat(),
+        a.model,
         a.claude_prob,
         a.confidence,
         a.edge,
@@ -145,9 +147,14 @@ def _row_to_analysis(row: sqlite3.Row) -> Analysis:
 
 
 def init_db() -> None:
-    """Create tables + indexes if absent. Idempotent; called on app startup."""
+    """Create tables + indexes if absent, and run idempotent column migrations."""
     with _conn() as conn:
         conn.executescript(_SCHEMA)
+        # Ad-hoc migration: add columns to pre-existing tables (CREATE IF NOT EXISTS
+        # won't alter them). Pre-existing analysis rows get model = NULL (legacy).
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(analyses)").fetchall()}
+        if "model" not in cols:
+            conn.execute("ALTER TABLE analyses ADD COLUMN model TEXT")
 
 
 # --- markets -------------------------------------------------------------------
@@ -177,7 +184,7 @@ def get_market(market_id: str) -> Market | None:
 
 def save_analysis(analysis: Analysis) -> int:
     """Append an analysis (always INSERT, never UPDATE). Returns the new row id."""
-    placeholders = ", ".join(["?"] * 11)
+    placeholders = ", ".join(["?"] * 12)
     with _conn() as conn:
         cur = conn.execute(
             f"INSERT INTO analyses ({_ANALYSIS_COLUMNS}) VALUES ({placeholders})",
@@ -279,14 +286,22 @@ def get_unresolved_analyzed_market_ids() -> list[str]:
     return [r["market_id"] for r in rows]
 
 
-def get_resolved_pairs() -> list[tuple[float, bool]]:
-    """(claude_prob, outcome) pairs for resolved analyses — the calibration dataset."""
+def get_resolved_pairs_by_model() -> dict[str, list[tuple[float, bool]]]:
+    """Resolved (claude_prob, outcome) pairs grouped by model — calibration dataset.
+
+    Rows with a NULL model (legacy, pre-tagging) are grouped under "unknown".
+    """
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT claude_prob, resolution FROM analyses "
+            "SELECT model, claude_prob, resolution FROM analyses "
             "WHERE resolved = 1 AND resolution IS NOT NULL AND claude_prob IS NOT NULL"
         ).fetchall()
-    return [(float(r["claude_prob"]), bool(r["resolution"])) for r in rows]
+    out: dict[str, list[tuple[float, bool]]] = {}
+    for r in rows:
+        out.setdefault(r["model"] or "unknown", []).append(
+            (float(r["claude_prob"]), bool(r["resolution"]))
+        )
+    return out
 
 
 def get_all_resolved_analyses() -> list[Analysis]:

@@ -108,6 +108,7 @@ def calibration_curve(pairs: list[tuple[float, bool]], bins: int = _BINS) -> lis
 
 @dataclass(frozen=True)
 class Recalibrator:
+    model: str
     n: int
     calibrated: bool
     temperature: float
@@ -123,18 +124,32 @@ class Recalibrator:
         return _apply_temp(p, self.temperature)
 
 
-def build_recalibrator() -> Recalibrator:
-    """Fit (or identity) from the current resolved set. Build once, apply per market."""
-    pairs = db.get_resolved_pairs()
+def _build_one(model: str, pairs: list[tuple[float, bool]]) -> Recalibrator:
     n = len(pairs)
     calibrated = n >= MIN_N
-    temperature = fit_temperature(pairs) if calibrated else 1.0
     return Recalibrator(
+        model=model,
         n=n,
         calibrated=calibrated,
-        temperature=temperature,
+        temperature=fit_temperature(pairs) if calibrated else 1.0,
         min_n=MIN_N,
         brier=brier_score(pairs),
         log_loss=log_loss(pairs),
         curve=calibration_curve(pairs),
     )
+
+
+def identity_recalibrator(model: str | None) -> Recalibrator:
+    """A no-op recalibrator for a model with no (or too few) resolved pairs."""
+    return _build_one(model or "unknown", [])
+
+
+def build_recalibrators() -> dict[str, Recalibrator]:
+    """One recalibrator per model from the resolved set (each gated by MIN_N).
+
+    Build once per scan; apply the one matching each analysis's model.
+    """
+    return {
+        model: _build_one(model, pairs)
+        for model, pairs in db.get_resolved_pairs_by_model().items()
+    }

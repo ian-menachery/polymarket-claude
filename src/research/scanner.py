@@ -55,7 +55,7 @@ def _ev_fields(market: Market, prob: float | None, min_days: float) -> dict:
 
 def scan(req: ScanRequest) -> list[ScanResult]:
     """Run a batch EV scan and return results sorted by annualized EV (desc)."""
-    recal = calibration.build_recalibrator()  # fit once; apply per market below
+    recals = calibration.build_recalibrators()  # one per model; fit once, applied per market
     markets = polymarket.fetch_all_active(max_markets=req.max_markets)
     db.upsert_markets(markets)  # persist fetched markets (also satisfies the analyses FK)
 
@@ -88,6 +88,7 @@ def scan(req: ScanRequest) -> list[ScanResult]:
         if analysis is None or analysis.claude_prob is None:
             continue
 
+        recal = recals.get(analysis.model) or calibration.identity_recalibrator(analysis.model)
         calibrated_p = recal.apply(analysis.claude_prob)
         ev = _ev_fields(m, calibrated_p, req.min_days_to_close)
         if ev["ev"] is None or ev["ev"] < req.min_divergence:  # gate on CALIBRATED divergence
