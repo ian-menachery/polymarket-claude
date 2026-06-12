@@ -84,6 +84,21 @@ class MarketWithAnalysis(BaseModel):
     stale: bool = False  # current market_prob moved > STALE_THRESHOLD since the latest analysis
 
 
+class Refutation(BaseModel):
+    """A skeptical second-pass review of an edge (see analyzer.refute_edge).
+
+    The refuter argues the market is right; ``verdict`` (holds/refuted) is derived by
+    the scanner from ``refuter_prob`` vs the market price, not self-reported.
+    """
+
+    refuter_prob: float | None = None  # the skeptic's own YES estimate (0-1), uncalibrated
+    verdict: Literal["holds", "refuted"] | None = None
+    resolution_risk: bool = False
+    counterpoints: list[str] = Field(default_factory=list)
+    summary: str = ""
+    error: str | None = None
+
+
 class ScanResult(BaseModel):
     """A market, its analysis, and the (uncalibrated) EV figures derived from them.
 

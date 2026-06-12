@@ -27,7 +27,7 @@ import anthropic
 import openai
 from dotenv import load_dotenv
 
-from research.models import Analysis, Confidence, Edge, Market
+from research.models import Analysis, Confidence, Edge, Market, Refutation
 
 _log = logging.getLogger(__name__)
 
@@ -191,80 +191,122 @@ def _last_text(response: Any) -> str:
     return texts[-1]
 
 
-def _create_message(messages: list[dict]) -> Any:
-    """One messages.create call with synchronous 429 backoff."""
+def _anthropic_complete(system: str, user: str) -> str:
+    """Anthropic messages.create with web search, 429 backoff, and pause_turn resume."""
     model = os.getenv("ANALYSIS_MODEL", ANTHROPIC_DEFAULT_MODEL)
-    for attempt in range(_MAX_RETRIES):
-        try:
-            return _get_client().messages.create(
-                model=model,
-                max_tokens=MAX_TOKENS,
-                tools=[WEB_SEARCH_TOOL],
-                system=SYSTEM_PROMPT,
-                messages=messages,
-            )
-        except anthropic.RateLimitError:
-            if attempt == _MAX_RETRIES - 1:
-                raise
-            time.sleep(2**attempt * 5)
-    raise RuntimeError("unreachable")  # pragma: no cover
 
+    def create(messages: list[dict]) -> Any:
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return _get_client().messages.create(
+                    model=model, max_tokens=MAX_TOKENS, tools=[WEB_SEARCH_TOOL],
+                    system=system, messages=messages,
+                )
+            except anthropic.RateLimitError:
+                if attempt == _MAX_RETRIES - 1:
+                    raise
+                time.sleep(2**attempt * 5)
+        raise RuntimeError("unreachable")  # pragma: no cover
 
-def _call_claude(market: Market) -> str:
-    """Run the Claude call, resuming through server-tool pause_turns."""
-    messages: list[dict] = [{"role": "user", "content": _user_prompt(market)}]
-    response = _create_message(messages)
+    messages: list[dict] = [{"role": "user", "content": user}]
+    response = create(messages)
     continuations = 0
     while response.stop_reason == "pause_turn" and continuations < _MAX_PAUSE_CONTINUATIONS:
-        # Re-send user + assistant turns; the server resumes the tool loop.
         messages = [
-            {"role": "user", "content": _user_prompt(market)},
+            {"role": "user", "content": user},
             {"role": "assistant", "content": response.content},
         ]
-        response = _create_message(messages)
+        response = create(messages)
         continuations += 1
     return _last_text(response)
 
 
-def _analyze_anthropic(market: Market) -> Analysis:
-    model = os.getenv("ANALYSIS_MODEL", ANTHROPIC_DEFAULT_MODEL)
-    return _parse_analysis(_call_claude(market), market, model)
+def _openai_complete(system: str, user: str) -> str:
+    """OpenAI Responses API with the web_search tool; returns output_text.
+
+    Raises on rate limit (incl. insufficient_quota); the caller maps it via _provider_error.
+    """
+    return _get_openai_client().responses.create(
+        model=os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_MODEL),
+        tools=[{"type": "web_search"}],
+        instructions=system,
+        input=user,
+        max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
+    ).output_text
+
+
+def _complete(system: str, user: str) -> str:
+    """One LLM completion via the configured provider, with web search. May raise."""
+    if current_provider() == "openai":
+        return _openai_complete(system, user)
+    return _anthropic_complete(system, user)
 
 
 def _is_quota_error(e: Exception) -> bool:
     return getattr(e, "code", None) == "insufficient_quota" or "insufficient_quota" in str(e)
 
 
-def _analyze_openai(market: Market) -> Analysis:
-    """OpenAI Responses API with the web_search tool. Reads response.output_text."""
-    model = os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_MODEL)
-    try:
-        resp = _get_openai_client().responses.create(
-            model=model,
-            tools=[{"type": "web_search"}],
-            instructions=SYSTEM_PROMPT,
-            input=_user_prompt(market),
-            max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
-        )
-    except openai.RateLimitError as e:
-        if _is_quota_error(e):
-            global _openai_exhausted
-            _openai_exhausted = True
-            _log.warning("OpenAI credits exhausted (insufficient_quota); set LLM_PROVIDER=anthropic.")
-            return Analysis(
-                market_id=market.id,
-                model=model,
-                error="OPENAI_QUOTA_EXHAUSTED: OpenAI credits are out — set LLM_PROVIDER=anthropic and restart.",
-            )
-        raise  # transient rate limit → handled by analyze_market's generic catch
-    return _parse_analysis(resp.output_text, market, model)
+def _provider_error(e: Exception) -> str:
+    """Map an exception to an error string; latch + explicit message on OpenAI quota exhaustion."""
+    if _is_quota_error(e):
+        global _openai_exhausted
+        _openai_exhausted = True
+        _log.warning("OpenAI credits exhausted (insufficient_quota); set LLM_PROVIDER=anthropic.")
+        return "OPENAI_QUOTA_EXHAUSTED: OpenAI credits are out — set LLM_PROVIDER=anthropic and restart."
+    return f"{type(e).__name__}: {e}"
 
 
 def analyze_market(market: Market) -> Analysis:
     """Analyze one market with the configured provider + web search. Never raises."""
+    model = current_model()
     try:
-        if current_provider() == "openai":
-            return _analyze_openai(market)
-        return _analyze_anthropic(market)
+        text = _complete(SYSTEM_PROMPT, _user_prompt(market))
+        return _parse_analysis(text, market, model)
     except Exception as e:  # noqa: BLE001 — scanner needs graceful degradation
-        return Analysis(market_id=market.id, model=current_model(), error=f"{type(e).__name__}: {e}")
+        return Analysis(market_id=market.id, model=model, error=_provider_error(e))
+
+
+REFUTE_SYSTEM_PROMPT = (
+    "You are a skeptical adversary reviewing a prediction-market bet. Assume the analyst may be "
+    "overconfident or wrong. Use web search to find evidence the analyst missed, then respond ONLY "
+    "with valid JSON — no markdown, no backticks:\n"
+    '{"probability":NUMBER,"counterpoints":["...","..."],"resolution_risk":true|false,'
+    '"summary":"2-3 sentences"}\n\n'
+    "probability = your own integer 0-100 YES estimate AFTER trying to break the edge. "
+    "resolution_risk = true if the resolution criteria are ambiguous or could resolve on a "
+    "technicality. counterpoints = 2-4 reasons the market price may be right."
+)
+
+
+def _refute_prompt(market: Market, claimed_prob: float) -> str:
+    mp = "unknown" if market.market_prob is None else f"{round(market.market_prob * 100)}%"
+    closes = market.end_date.date().isoformat() if market.end_date else "unknown"
+    context = f"\nContext: {market.description[:400]}" if market.description else ""
+    return (
+        f'Market: "{market.question}"\n'
+        f"Current market YES probability: {mp}\n"
+        f"Our analyst estimates {round(claimed_prob * 100)}% for YES.\n"
+        f"Closes: {closes}{context}\n\n"
+        "Argue why the MARKET price is more likely correct than our analyst, search for "
+        "disconfirming evidence, and check the resolution criteria. Then give your own calibrated "
+        "YES probability."
+    )
+
+
+def refute_edge(market: Market, claimed_prob: float) -> Refutation:
+    """Skeptical second pass that tries to break an edge. Never raises.
+
+    Returns the refuter's own probability + counterpoints + resolution-risk flag; the
+    holds/refuted verdict is derived by the caller (scanner) from refuter_prob vs the market.
+    """
+    try:
+        result = _extract_json(_complete(REFUTE_SYSTEM_PROMPT, _refute_prompt(market, claimed_prob)))
+        cps = [str(c) for c in (result.get("counterpoints") or [])][:4]
+        return Refutation(
+            refuter_prob=_normalize_prob(result),
+            resolution_risk=bool(result.get("resolution_risk")),
+            counterpoints=cps,
+            summary=str(result.get("summary") or ""),
+        )
+    except Exception as e:  # noqa: BLE001 — a failed refutation shouldn't kill the scan
+        return Refutation(error=_provider_error(e))
