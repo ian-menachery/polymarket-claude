@@ -101,6 +101,8 @@
     .ann { font-weight: 700; }
     .basis-exec { font-size: 11px; font-weight: 700; color: var(--green); background: var(--green-bg); padding: 2px 7px; border-radius: 6px; }
     .basis-mid  { font-size: 11px; color: var(--muted); background: var(--gray-bg); padding: 2px 7px; border-radius: 6px; }
+    .stale-badge { font-size: 12px; color: var(--warn); background: var(--warn-bg);
+      border: 1px solid #f2d699; padding: 5px 9px; border-radius: 7px; }
 
     /* Calibration */
     .cal-head { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
@@ -191,7 +193,9 @@
     }
 
     function MarketCard({ item, onAnalyzed }) {
-      const { market: m, latest_analysis: a, analysis_count } = item;
+      const { market: m, latest_analysis: a, analysis_count, stale } = item;
+      const stalePP = stale && a && a.market_prob_at_analysis != null
+        ? Math.round((m.market_prob - a.market_prob_at_analysis) * 100) : null;
       const [busy, setBusy] = useState(false);
       const [err, setErr] = useState(null);
 
@@ -212,6 +216,12 @@
         <div className="card">
           <div className="tags">{m.tags.map((t) => <span className="tag" key={t}>{t}</span>)}</div>
           <div className="q">{m.question}</div>
+          {stalePP != null && (
+            <div className="stale-badge">
+              ⚠ stale — market moved {stalePP >= 0 ? "+" : ""}{stalePP}pp since analysis
+              ({pct(a.market_prob_at_analysis)} → {pct(m.market_prob)}); re-analyze
+            </div>
+          )}
           <div className="stats">
             <div className="prob">{pct(m.market_prob)} <small>YES</small></div>
             <div className="kv">24h vol <b>{money(m.volume_24h)}</b></div>
