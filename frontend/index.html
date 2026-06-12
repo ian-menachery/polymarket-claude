@@ -99,6 +99,13 @@
     .side.yes { color: var(--green); background: var(--green-bg); }
     .side.no { color: var(--red); background: var(--red-bg); }
     .ann { font-weight: 700; }
+
+    /* Calibration */
+    .cal-head { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+    .cal-note { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+    .cal-grid { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+    .reliability { background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+    .axis { font-size: 10px; fill: var(--muted); }
   </style>
 </head>
 <body>
@@ -135,6 +142,11 @@
         const d = await r.json();
         if (!r.ok) throw new Error(typeof d.error === "string" ? d.error : "Scan failed");
         return d;
+      },
+      async getCalibration() {
+        const r = await fetch("/api/calibration");
+        if (!r.ok) throw new Error("Failed to load calibration");
+        return r.json();
       },
     };
 
@@ -297,6 +309,9 @@
       const [results, setResults] = useState(null);
       const [scanning, setScanning] = useState(false);
       const [err, setErr] = useState(null);
+      const [cal, setCal] = useState(null);
+
+      useEffect(() => { API.getCalibration().then(setCal).catch(() => {}); }, []);
 
       const num = (k) => (e) => setReq((r) => ({ ...r, [k]: Number(e.target.value) }));
 
@@ -342,8 +357,12 @@
 
           <div className="warn">
             ⚠ Each scanned market is a live Claude web-search call (takes seconds + costs API spend).
-            Bound it with high min-volume and a small max-markets. EV is computed from the market
-            <b> mid</b> price and an <b>uncalibrated</b> estimate — <b>directional only</b>, not a guaranteed edge.
+            Bound it with high min-volume and a small max-markets.{" "}
+            {cal && cal.calibrated
+              ? <span>EV uses <b>calibrated</b> probabilities (T={cal.temperature.toFixed(2)}, N={cal.n}) but the
+                  market <b>mid</b> price — not executable bid/ask (Phase 3.5).</span>
+              : <span>EV uses the market <b>mid</b> price and an <b>uncalibrated</b> estimate
+                  {cal ? ` (need ${cal.min_n} resolved, have ${cal.n})` : ""} — <b>directional only</b>, not a guaranteed edge.</span>}
           </div>
 
           {err && <div className="err">{err}</div>}
@@ -357,12 +376,12 @@
               <div className="empty">No markets cleared the gates. Loosen the filters and rescan.</div>
             ) : (
               <div>
-                <div className="meta-line">{results.length} ranked by annualized EV (uncalibrated)</div>
+                <div className="meta-line">{results.length} ranked by annualized EV {cal && cal.calibrated ? "(calibrated)" : "(uncalibrated)"}</div>
                 <div className="table-wrap">
                   <table className="scan">
                     <thead>
                       <tr>
-                        <th>Side</th><th>Mkt</th><th>Claude</th><th>Div</th>
+                        <th>Side</th><th>Mkt</th><th>Claude</th><th>Calib.</th><th>Div</th>
                         <th>EV%</th><th>Kelly</th><th>Ann. EV</th><th>Liq</th><th>Closes</th><th>Conf</th>
                         <th className="q-cell">Question</th><th></th>
                       </tr>
@@ -375,6 +394,7 @@
                             <td>{r.side && <span className={"side " + r.side.toLowerCase()}>{r.side}</span>}</td>
                             <td>{pct(m.market_prob)}</td>
                             <td>{pct(a.claude_prob)}</td>
+                            <td>{pct(r.calibrated_prob)}</td>
                             <td>{r.ev != null ? Math.round(r.ev * 100) + "pp" : "—"}</td>
                             <td>{pct1(r.ev_pct)}</td>
                             <td>{pct1(r.kelly)}</td>
@@ -397,6 +417,67 @@
           {!results && !scanning && !err && (
             <div className="empty">Set your gates and hit <b>Run scan</b> to rank markets by expected value.</div>
           )}
+        </main>
+      );
+    }
+
+    function CalibrationView() {
+      const [cal, setCal] = useState(null);
+      const [err, setErr] = useState(null);
+      useEffect(() => { API.getCalibration().then(setCal).catch((e) => setErr(e.message)); }, []);
+
+      if (err) return <main><div className="err">{err}</div></main>;
+      if (!cal) return <main><div className="empty">Loading…</div></main>;
+
+      const S = 240, PAD = 28;
+      const xx = (p) => PAD + p * (S - 2 * PAD);
+      const yy = (p) => (S - PAD) - p * (S - 2 * PAD);
+      const maxCount = Math.max(1, ...cal.curve.map((b) => b.count));
+      const pts = cal.curve.filter((b) => b.count > 0 && b.predicted_mean != null);
+      const Tnote = !cal.calibrated
+        ? `Insufficient resolved markets — using raw estimates (have ${cal.n}, need ${cal.min_n}). Calibration accrues as markets resolve.`
+        : cal.temperature > 1.05 ? "T > 1 → Claude is overconfident; estimates are softened toward 50%."
+        : cal.temperature < 0.95 ? "T < 1 → Claude is underconfident; estimates are sharpened."
+        : "T ≈ 1 → Claude is already well-calibrated; little correction applied.";
+
+      return (
+        <main>
+          <div className="cal-head">
+            <span className={"badge " + (cal.calibrated ? "up" : "fair")}>{cal.calibrated ? "calibrated" : "uncalibrated"}</span>
+            <span className="kv">N <b>{cal.n}</b> / need {cal.min_n}</span>
+            <span className="kv">T <b>{cal.temperature.toFixed(2)}</b></span>
+            <span className="kv">Brier <b>{cal.brier.toFixed(3)}</b></span>
+            <span className="kv">log-loss <b>{cal.log_loss.toFixed(3)}</b></span>
+          </div>
+          <div className="cal-note">{Tnote}{" "}<a href="/api/calibration/export.csv">Export resolved pairs (CSV) ↗</a></div>
+
+          <div className="cal-grid">
+            <svg width={S} height={S} className="reliability">
+              <rect x={PAD} y={PAD} width={S - 2 * PAD} height={S - 2 * PAD} fill="none" stroke="var(--line)" />
+              <line x1={xx(0)} y1={yy(0)} x2={xx(1)} y2={yy(1)} stroke="#cbd5e1" strokeDasharray="4 4" />
+              {pts.map((b, i) => (
+                <circle key={i} cx={xx(b.predicted_mean)} cy={yy(b.empirical_rate)}
+                  r={3 + 7 * (b.count / maxCount)} fill="rgba(37,99,235,.45)" stroke="var(--accent)" />
+              ))}
+              <text x={S / 2} y={S - 4} textAnchor="middle" className="axis">predicted</text>
+              <text x={12} y={S / 2} textAnchor="middle" transform={`rotate(-90 12 ${S / 2})`} className="axis">actual</text>
+            </svg>
+            <div className="table-wrap" style={{ flex: 1 }}>
+              <table className="scan">
+                <thead><tr><th>Bin</th><th>Predicted</th><th>Actual</th><th>N</th></tr></thead>
+                <tbody>
+                  {cal.curve.map((b, i) => (
+                    <tr key={i}>
+                      <td>{Math.round(b.bin_lo * 100)}–{Math.round(b.bin_hi * 100)}%</td>
+                      <td>{b.predicted_mean == null ? "—" : pct(b.predicted_mean)}</td>
+                      <td>{b.empirical_rate == null ? "—" : pct(b.empirical_rate)}</td>
+                      <td>{b.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </main>
       );
     }
@@ -449,6 +530,7 @@
               <div className="tabs">
                 <span className={"tab" + (view === "markets" ? " active" : "")} onClick={() => setView("markets")}>Markets</span>
                 <span className={"tab" + (view === "scan" ? " active" : "")} onClick={() => setView("scan")}>Scan (EV)</span>
+                <span className={"tab" + (view === "calibration" ? " active" : "")} onClick={() => setView("calibration")}>Calibration</span>
               </div>
             </div>
           </header>
@@ -457,7 +539,7 @@
                 ? <div className="empty">Loading…</div>
                 : <MarketsView markets={markets} onAnalyzed={handleAnalyzed}
                     refreshing={refreshing} onRefresh={handleRefresh} error={error} />)
-            : <ScannerView />}
+            : view === "scan" ? <ScannerView /> : <CalibrationView />}
         </div>
       );
     }

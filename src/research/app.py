@@ -6,6 +6,8 @@ Serves the single-file frontend at ``/`` and a JSON API under ``/api/``. Run wit
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 from pathlib import Path
 from typing import Any
@@ -14,8 +16,8 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 from pydantic import ValidationError
 
-from research import analyzer, db, polymarket, scanner
-from research.models import Analysis, Market, MarketWithAnalysis, ScanRequest
+from research import analyzer, calibration, db, polymarket, scanner
+from research.models import Analysis, CalibrationReport, Market, MarketWithAnalysis, ScanRequest
 
 _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 _ALLOWED_ORIGINS = {"http://localhost:5173", "http://localhost:3000"}
@@ -153,6 +155,31 @@ def scan() -> Any:
         return jsonify({"error": e.errors()}), 400
     results = scanner.scan(req)
     return jsonify([r.model_dump(mode="json") for r in results])
+
+
+@app.get("/api/calibration")
+def calibration_report() -> Any:
+    r = calibration.build_recalibrator()
+    report = CalibrationReport(
+        n=r.n, calibrated=r.calibrated, temperature=r.temperature, min_n=r.min_n,
+        brier=r.brier, log_loss=r.log_loss, curve=r.curve,
+    )
+    return jsonify(report.model_dump(mode="json"))
+
+
+@app.get("/api/calibration/export.csv")
+def calibration_export() -> Any:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["market_id", "created_at", "claude_prob", "resolution"])
+    for a in db.get_all_resolved_analyses():
+        res = "" if a.resolution is None else (1 if a.resolution else 0)
+        w.writerow([a.market_id, a.created_at.isoformat(), a.claude_prob, res])
+    return Response(
+        buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=calibration.csv"},
+    )
 
 
 @app.put("/api/markets/<market_id>/resolution")

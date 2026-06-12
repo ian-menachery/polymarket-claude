@@ -101,6 +101,28 @@ class ScanResult(BaseModel):
     days_to_close: float | None = None
 
 
+class CalibrationBin(BaseModel):
+    """One reliability bin: predicted mean vs empirical resolve-rate."""
+
+    bin_lo: float
+    bin_hi: float
+    predicted_mean: float | None
+    empirical_rate: float | None
+    count: int
+
+
+class CalibrationReport(BaseModel):
+    """Calibration status + metrics for the /api/calibration endpoint."""
+
+    n: int
+    calibrated: bool
+    temperature: float
+    min_n: int
+    brier: float
+    log_loss: float
+    curve: list[CalibrationBin]
+
+
 class ScanRequest(BaseModel):
     """Parameters controlling a batch EV scan."""
 
