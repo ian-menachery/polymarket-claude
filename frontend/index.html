@@ -99,6 +99,8 @@
     .side.yes { color: var(--green); background: var(--green-bg); }
     .side.no { color: var(--red); background: var(--red-bg); }
     .ann { font-weight: 700; }
+    .basis-exec { font-size: 11px; font-weight: 700; color: var(--green); background: var(--green-bg); padding: 2px 7px; border-radius: 6px; }
+    .basis-mid  { font-size: 11px; color: var(--muted); background: var(--gray-bg); padding: 2px 7px; border-radius: 6px; }
 
     /* Calibration */
     .cal-head { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
@@ -397,13 +399,13 @@
               <div className="empty">No markets cleared the gates. Loosen the filters and rescan.</div>
             ) : (
               <div>
-                <div className="meta-line">{results.length} ranked by annualized EV {cal && cal.calibrated ? "(calibrated)" : "(uncalibrated)"}</div>
+                <div className="meta-line">{results.length} ranked by annualized EV {cal && cal.calibrated ? "(calibrated)" : "(uncalibrated)"} · basis: <b>exec</b> = live bid/ask, <b>mid</b> = mid-price fallback</div>
                 <div className="table-wrap">
                   <table className="scan">
                     <thead>
                       <tr>
-                        <th>Side</th><th>Mkt</th><th>Claude</th><th>Calib.</th><th>Div</th>
-                        <th>EV%</th><th>Kelly</th><th>Ann. EV</th><th>Liq</th><th>Closes</th><th>Conf</th>
+                        <th>Side</th><th>Mkt</th><th>Bid</th><th>Ask</th><th>Claude</th><th>Calib.</th><th>Div</th>
+                        <th>EV%</th><th>Kelly</th><th>Ann. EV</th><th>Basis</th><th>Liq</th><th>Closes</th><th>Conf</th>
                         <th className="q-cell">Question</th><th></th>
                       </tr>
                     </thead>
@@ -414,12 +416,15 @@
                           <tr key={m.id}>
                             <td>{r.side && <span className={"side " + r.side.toLowerCase()}>{r.side}</span>}</td>
                             <td>{pct(m.market_prob)}</td>
+                            <td>{pct(r.best_bid)}</td>
+                            <td>{pct(r.best_ask)}</td>
                             <td>{pct(a.claude_prob)}</td>
                             <td>{pct(r.calibrated_prob)}</td>
                             <td>{r.ev != null ? Math.round(r.ev * 100) + "pp" : "—"}</td>
                             <td>{pct1(r.ev_pct)}</td>
                             <td>{pct1(r.kelly)}</td>
                             <td className="ann">{pct1(r.annualized_ev)}</td>
+                            <td><span className={r.executable ? "basis-exec" : "basis-mid"}>{r.executable ? "exec" : "mid"}</span></td>
                             <td>{money(m.liquidity)}</td>
                             <td>{r.days_to_close != null ? Math.round(r.days_to_close) + "d" : "—"}</td>
                             <td>{a.confidence || "—"}</td>
