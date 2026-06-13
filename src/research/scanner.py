@@ -104,8 +104,10 @@ def scan(req: ScanRequest) -> list[ScanResult]:
     # Cheap pre-filters first — they bound how many paid Claude calls we make.
     def passes_pre(m: Market) -> bool:
         dtc = _days_to_close(m)
+        # Kalshi reports no 24h volume (always 0), so fall back to lifetime volume_total
+        # there; Polymarket markets normally have a non-zero volume_24h and are unaffected.
         return (
-            (m.volume_24h or 0.0) >= req.min_volume_24h
+            (m.volume_24h or m.volume_total or 0.0) >= req.min_volume_24h
             and (m.liquidity or 0.0) >= req.min_liquidity
             and dtc is not None
             and dtc >= req.min_days_to_close

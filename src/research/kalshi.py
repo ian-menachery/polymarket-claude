@@ -27,6 +27,7 @@ Pydantic model with gotcha-safe validators → binary filter → ``fetch_markets
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import re
 import time
@@ -37,6 +38,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from research.models import Market
+
+_log = logging.getLogger(__name__)
 
 DEFAULT_API_HOST = "https://api.elections.kalshi.com"
 API_PREFIX = "/trade-api/v2"
@@ -246,23 +249,48 @@ def fetch_markets(
     return [m for m in (normalize_market(raw) for raw in raw_markets) if m is not None]
 
 
-def fetch_all_active(max_markets: int = 500) -> list[Market]:
-    """Paginate active markets until ``max_markets`` eligible ones or the last page.
+def fetch_all_active(
+    max_markets: int = 500, min_volume: float = 1000.0, max_pages: int = 20
+) -> list[Market]:
+    """Paginate active markets, keeping only those with real trading activity.
 
     Cursor-paged (unlike Polymarket's offset paging): each page returns the cursor for
     the next, and an empty cursor marks the end.
+
+    Kalshi's ``/markets`` has no server-side volume sort, so its early pages are
+    dominated by auto-generated, zero-activity parlay markets. We therefore keep only
+    markets whose **lifetime** volume (``volume_total``) clears ``min_volume`` and keep
+    paging past the dead ones. (24h volume isn't usable: GetMarkets reports it as 0 for
+    every market, so lifetime volume is the only populated liquidity signal.)
+
+    Bounded three ways — ``max_markets`` eligible found, cursor exhausted, or ``max_pages``
+    fetched — so a scan stays responsive even when liquid markets are sparse. Hitting the
+    page cap is logged (never a silent truncation).
     """
     limit = 1000  # Kalshi allows up to 1000/page
     markets: list[Market] = []
     cursor: str | None = None
+    pages = 0
+    raw_seen = 0
     with KalshiClient() as client:
-        while len(markets) < max_markets:
+        while len(markets) < max_markets and pages < max_pages:
             raw_markets, cursor = _fetch_page(client, limit=limit, cursor=cursor, status="open")
+            pages += 1
+            raw_seen += len(raw_markets)
             if not raw_markets:
                 break
             markets.extend(
-                m for m in (normalize_market(raw) for raw in raw_markets) if m is not None
+                m
+                for m in (normalize_market(raw) for raw in raw_markets)
+                if m is not None and (m.volume_total or 0.0) >= min_volume
             )
             if not cursor:  # last page
                 break
+        else:
+            if pages >= max_pages and len(markets) < max_markets:
+                _log.warning(
+                    "kalshi fetch hit max_pages=%d (scanned %d markets across %d pages, "
+                    "kept %d with volume_total >= %s) before reaching max_markets=%d",
+                    max_pages, raw_seen, pages, len(markets), min_volume, max_markets,
+                )
     return markets[:max_markets]
