@@ -25,6 +25,7 @@ from research.models import Analysis, Market, MarketWithAnalysis, Signal
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS markets (
     id           TEXT PRIMARY KEY,
+    exchange     TEXT    NOT NULL DEFAULT 'polymarket',  -- 'polymarket' | 'kalshi'
     slug         TEXT,
     question     TEXT    NOT NULL,
     market_prob  REAL,
@@ -63,6 +64,7 @@ CREATE INDEX IF NOT EXISTS idx_analyses_edge_mag   ON analyses(edge_magnitude DE
 CREATE TABLE IF NOT EXISTS signals (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     market_id           TEXT    NOT NULL,
+    exchange            TEXT    NOT NULL DEFAULT 'polymarket',  -- 'polymarket' | 'kalshi'
     question            TEXT    NOT NULL,
     created_at          TEXT    NOT NULL,
     model               TEXT,
@@ -92,7 +94,7 @@ CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at DESC);
 STALE_THRESHOLD = 0.04  # current price moving more than this (4pp) since analysis = stale
 
 _MARKET_COLUMNS = (
-    "id, slug, question, market_prob, volume_24h, volume_total, liquidity, "
+    "id, exchange, slug, question, market_prob, volume_24h, volume_total, liquidity, "
     "yes_token_id, end_date, tags, description, fetched_at"
 )
 _ANALYSIS_COLUMNS = (
@@ -100,7 +102,7 @@ _ANALYSIS_COLUMNS = (
     "confidence, edge, edge_magnitude, factors, summary, resolved, resolution, error"
 )
 _SIGNAL_COLUMNS = (
-    "market_id, question, created_at, model, side, calibrated_prob, market_prob, "
+    "market_id, exchange, question, created_at, model, side, calibrated_prob, market_prob, "
     "price_paid, ev, ev_pct, kelly, annualized_ev, fill_shares, target_position_usd, "
     "days_to_close, adversarial_verdict, refuter_model, resolved, resolution, pnl"
 )
@@ -136,6 +138,7 @@ def _conn() -> Iterator[sqlite3.Connection]:
 def _market_to_row(m: Market) -> tuple:
     return (
         m.id,
+        m.exchange,
         m.slug,
         m.question,
         m.market_prob,
@@ -183,6 +186,7 @@ def _row_to_analysis(row: sqlite3.Row) -> Analysis:
 def _signal_to_row(s: Signal) -> tuple:
     return (
         s.market_id,
+        s.exchange,
         s.question,
         s.created_at.isoformat(),
         s.model,
@@ -223,6 +227,14 @@ def init_db() -> None:
             conn.execute("ALTER TABLE analyses ADD COLUMN model TEXT")
         if "market_prob_at_analysis" not in cols:
             conn.execute("ALTER TABLE analyses ADD COLUMN market_prob_at_analysis REAL")
+        # Dual-exchange: tag pre-existing markets/signals as 'polymarket' (the only
+        # source before Kalshi support). New rows set it explicitly via the models.
+        market_cols = {row[1] for row in conn.execute("PRAGMA table_info(markets)").fetchall()}
+        if "exchange" not in market_cols:
+            conn.execute("ALTER TABLE markets ADD COLUMN exchange TEXT NOT NULL DEFAULT 'polymarket'")
+        signal_cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
+        if "exchange" not in signal_cols:
+            conn.execute("ALTER TABLE signals ADD COLUMN exchange TEXT NOT NULL DEFAULT 'polymarket'")
 
 
 # --- markets -------------------------------------------------------------------
@@ -231,7 +243,7 @@ def init_db() -> None:
 def upsert_markets(markets: list[Market]) -> None:
     """INSERT OR REPLACE markets so re-fetching doesn't duplicate rows."""
     rows = [_market_to_row(m) for m in markets]
-    placeholders = ", ".join(["?"] * 12)
+    placeholders = ", ".join(["?"] * 13)
     with _conn() as conn:
         conn.executemany(
             f"INSERT OR REPLACE INTO markets ({_MARKET_COLUMNS}) VALUES ({placeholders})",
@@ -406,7 +418,7 @@ def get_all_resolved_analyses() -> list[Analysis]:
 
 def save_signal(sig: Signal) -> int:
     """Append a forward signal (always INSERT, never UPDATE). Returns the new row id."""
-    placeholders = ", ".join(["?"] * 20)
+    placeholders = ", ".join(["?"] * 21)
     with _conn() as conn:
         cur = conn.execute(
             f"INSERT INTO signals ({_SIGNAL_COLUMNS}) VALUES ({placeholders})",

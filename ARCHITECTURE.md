@@ -44,6 +44,38 @@ Key normalization behavior:
 
 ---
 
+### `kalshi.py` — Market fetcher (second exchange)
+Fetches and normalizes Kalshi markets into the same `Market` model, tagged
+`exchange="kalshi"`. Mirrors `polymarket.py`'s structure (sync `httpx.Client()`, raw
+Pydantic model with gotcha-safe validators, binary filter, fetch functions). The ONLY
+other module allowed to import `httpx` / call an exchange API.
+
+```python
+def fetch_markets(limit: int = 100, cursor: str | None = None, status: str = "open") -> list[Market]
+def fetch_all_active(max_markets: int = 500) -> list[Market]
+```
+
+Base URL: `https://api.elections.kalshi.com/trade-api/v2`. Differences from Polymarket:
+- **Public reads, no key.** Auth (RSA-PSS signing via `KALSHI_API_KEY`/`KALSHI_KEY_FILE`,
+  needs `cryptography`) is optional and only for trading/higher limits — not used here.
+- **Prices in integer cents** (1–99): `market_prob` = `last_price/100`, else the
+  `yes_bid`/`yes_ask` mid, else `None`.
+- **Cursor pagination** (not offset). **No CLOB token** → `yes_token_id=None`, so the
+  scanner prices Kalshi edges at the mid (`executable=False`); forward signals/alerts
+  for Kalshi await a future by-ticker order-book fetch.
+
+---
+
+### Dual-exchange design
+The `EXCHANGE` env var (`polymarket` | `kalshi` | `both`, default `polymarket`) selects
+which fetch function(s) `scanner.py` calls — the only scanner change. Every `Market` and
+`Signal` carries an `exchange` field (default `polymarket`) so markets, signals, and
+calibration stay attributable per exchange. Both exchanges feed the same
+analyzer → DB → routes pipeline; ids stay globally unique (Kalshi alphanumeric tickers
+vs. Polymarket numeric ids).
+
+---
+
 ### `analyzer.py` — Claude analysis engine
 Calls Claude with web_search and extracts structured analysis.
 
@@ -228,6 +260,7 @@ Central file for all backend calls. Base URL from `VITE_API_URL` env var (defaul
 ```sql
 CREATE TABLE IF NOT EXISTS markets (
     id           TEXT PRIMARY KEY,
+    exchange     TEXT    NOT NULL DEFAULT 'polymarket',  -- 'polymarket' | 'kalshi'
     slug         TEXT,               -- builds the polymarket.com trade URL
     question     TEXT    NOT NULL,
     market_prob  REAL,

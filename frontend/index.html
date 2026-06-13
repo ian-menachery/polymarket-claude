@@ -459,7 +459,7 @@
                             <td>{pct1(r.kelly)}</td>
                             <td className="ann">{pct1(r.annualized_ev)}</td>
                             <td>{(() => {
-                              if (!r.executable) return <span className="basis-mid" title="mid-price fallback — no live two-sided book">mid</span>;
+                              if (!r.executable) return <span className="basis-mid" title="mid-price only — no live order book (e.g. Kalshi, or no two-sided Polymarket book)">mid</span>;
                               const partial = r.fully_filled === false;
                               const tip = `VWAP fill for $${r.target_position_usd} (${shares(r.fill_shares)} shares)`
                                 + (partial ? " · partial: book too thin to fill the full target" : "");

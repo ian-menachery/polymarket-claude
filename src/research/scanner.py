@@ -20,7 +20,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from research import analyzer, calibration, db, polymarket
+from research import analyzer, calibration, db, kalshi, polymarket
 from research.models import Market, ScanRequest, ScanResult, Signal
 
 _log = logging.getLogger(__name__)
@@ -77,10 +77,28 @@ def _ev_fields(
             "price_paid": price_paid, "executable": executable}
 
 
+def _fetch_active_markets(max_markets: int) -> list[Market]:
+    """Fetch active markets from the exchange(s) the ``EXCHANGE`` env var selects.
+
+    ``polymarket`` (default) | ``kalshi`` | ``both``. For ``both`` we pull up to
+    ``max_markets`` from each and concatenate — the combined list can exceed
+    ``max_markets``, but the scanner's pre-filters bound how many are actually analyzed.
+    """
+    exchange = os.getenv("EXCHANGE", "polymarket").strip().lower()
+    if exchange == "kalshi":
+        return kalshi.fetch_all_active(max_markets=max_markets)
+    if exchange == "both":
+        return (
+            polymarket.fetch_all_active(max_markets=max_markets)
+            + kalshi.fetch_all_active(max_markets=max_markets)
+        )
+    return polymarket.fetch_all_active(max_markets=max_markets)
+
+
 def scan(req: ScanRequest) -> list[ScanResult]:
     """Run a batch EV scan and return results sorted by annualized EV (desc)."""
     recals = calibration.build_recalibrators()  # one per model; fit once, applied per market
-    markets = polymarket.fetch_all_active(max_markets=req.max_markets)
+    markets = _fetch_active_markets(req.max_markets)
     db.upsert_markets(markets)  # persist fetched markets (also satisfies the analyses FK)
 
     # Cheap pre-filters first — they bound how many paid Claude calls we make.
@@ -216,6 +234,7 @@ def persist_signals(results: list[ScanResult]) -> int:
             continue
         db.save_signal(Signal(
             market_id=r.market.id,
+            exchange=r.market.exchange,
             question=r.market.question,
             model=r.analysis.model,
             side=r.side,

@@ -38,6 +38,7 @@ class Market(BaseModel):
     """
 
     id: str
+    exchange: Literal["polymarket", "kalshi"] = "polymarket"  # which exchange this market came from
     slug: str
     question: str
     market_prob: float | None  # YES probability 0-1; None if unavailable/malformed
@@ -145,6 +146,7 @@ class Signal(BaseModel):
 
     id: int | None = None
     market_id: str
+    exchange: Literal["polymarket", "kalshi"] = "polymarket"  # exchange the signal's market is on
     question: str
     created_at: datetime = Field(default_factory=_utcnow)
     model: str | None = None  # the LLM whose estimate drove this signal (per-model attribution)
