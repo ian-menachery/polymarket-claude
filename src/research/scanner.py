@@ -102,12 +102,18 @@ def scan(req: ScanRequest) -> list[ScanResult]:
     db.upsert_markets(markets)  # persist fetched markets (also satisfies the analyses FK)
 
     # Cheap pre-filters first — they bound how many paid Claude calls we make.
+    kalshi_min_volume = float(os.getenv("KALSHI_MIN_VOLUME", "5000"))
+
     def passes_pre(m: Market) -> bool:
         dtc = _days_to_close(m)
-        # Kalshi reports no 24h volume (always 0), so fall back to lifetime volume_total
-        # there; Polymarket markets normally have a non-zero volume_24h and are unaffected.
+        # Kalshi reports no 24h volume, so gate it on lifetime volume_total against its own
+        # floor; Polymarket keeps the per-scan 24h-volume gate.
+        if m.exchange == "kalshi":
+            vol_ok = (m.volume_total or 0.0) >= kalshi_min_volume
+        else:
+            vol_ok = (m.volume_24h or 0.0) >= req.min_volume_24h
         return (
-            (m.volume_24h or m.volume_total or 0.0) >= req.min_volume_24h
+            vol_ok
             and (m.liquidity or 0.0) >= req.min_liquidity
             and dtc is not None
             and dtc >= req.min_days_to_close
