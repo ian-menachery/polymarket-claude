@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import os
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +22,44 @@ from research import analyzer, calibration, db, polymarket, scanner, scheduler
 from research.models import Analysis, CalibrationReport, Market, MarketWithAnalysis, ScanRequest
 
 _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 _ALLOWED_ORIGINS = {"http://localhost:5173", "http://localhost:3000"}
 
+
+def _init_logging() -> None:
+    """Route root logging to a size-capped rotating file plus the console.
+
+    Replaces the previous unbounded append (see ROADMAP). Tunable via env: ``LOG_LEVEL``
+    (default INFO), ``LOG_MAX_BYTES`` (default 10MB), ``LOG_BACKUP_COUNT`` (default 3), and
+    ``LOG_FILE`` (default ``data/app.log``). Called once at import so both the web process
+    and the scheduler thread log to file. If the log file can't be opened (e.g. locked by
+    another process on Windows), we degrade to console-only rather than failing startup.
+    """
+    root = logging.getLogger()
+    if any(isinstance(h, RotatingFileHandler) for h in root.handlers):
+        return  # idempotent — don't stack handlers on re-import
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.setLevel(getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO))
+    root.addHandler(console)
+    log_path = Path(os.getenv("LOG_FILE") or (_DATA_DIR / "app.log"))
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_path,
+            maxBytes=int(os.getenv("LOG_MAX_BYTES", str(10_000_000))),
+            backupCount=int(os.getenv("LOG_BACKUP_COUNT", "3")),
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(fmt)
+        root.addHandler(file_handler)
+    except OSError as e:
+        root.warning("file logging disabled (could not open %s): %s", log_path, e)
+
+
 load_dotenv()
+_init_logging()
 analyzer.validate_openai_model()  # warn early on a typo'd OPENAI_MODEL (provider-gated)
 db.init_db()
 
@@ -185,6 +222,13 @@ def provider() -> Any:
         "model": analyzer.current_model(),
         "openai_exhausted": analyzer.openai_exhausted(),
     })
+
+
+@app.post("/api/provider/reset")
+def provider_reset() -> Any:
+    """Clear the OpenAI exhaustion latch without a server restart."""
+    analyzer.reset_openai_exhausted()
+    return jsonify({"openai_exhausted": analyzer.openai_exhausted()})
 
 
 @app.get("/api/calibration/export.csv")

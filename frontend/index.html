@@ -54,6 +54,9 @@
     .card .tags { display: flex; gap: 6px; flex-wrap: wrap; }
     .tag { font-size: 11px; color: var(--muted); background: var(--gray-bg);
       padding: 2px 8px; border-radius: 6px; }
+    .tag.exch { font-weight: 700; text-transform: capitalize; }
+    .tag.exch.polymarket { color: #7c3aed; background: #ede9fe; }
+    .tag.exch.kalshi { color: #16a34a; background: #dcfce7; }
     .q { font-weight: 600; font-size: 15px; }
     .stats { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
     .prob { font-size: 30px; font-weight: 700; line-height: 1; }
@@ -171,6 +174,11 @@
         if (!r.ok) throw new Error("Failed to load provider");
         return r.json();
       },
+      async resetProvider() {
+        const r = await fetch("/api/provider/reset", { method: "POST" });
+        if (!r.ok) throw new Error("Failed to reset provider");
+        return r.json();
+      },
       async getScanHistory() {
         const r = await fetch("/api/scan-history");
         if (!r.ok) throw new Error("Failed to load scan history");
@@ -234,7 +242,10 @@
       const div = divergence(a);
       return (
         <div className="card">
-          <div className="tags">{m.tags.map((t) => <span className="tag" key={t}>{t}</span>)}</div>
+          <div className="tags">
+            {m.exchange && <span className={"tag exch " + m.exchange}>{m.exchange}</span>}
+            {m.tags.map((t) => <span className="tag" key={t}>{t}</span>)}
+          </div>
           <div className="q">{m.question}</div>
           {stalePP != null && (
             <div className="stale-badge">
@@ -436,7 +447,7 @@
                   <table className="scan">
                     <thead>
                       <tr>
-                        <th>Side</th><th>Mkt</th><th>Bid</th><th>Ask</th><th>Claude</th><th>Calib.</th><th>Div</th>
+                        <th>Side</th><th>Exch</th><th>Mkt</th><th>Bid</th><th>Ask</th><th>Claude</th><th>Calib.</th><th>Div</th>
                         <th>EV%</th><th>Kelly</th><th>Ann. EV</th><th>Basis</th><th>Verdict</th><th>Liq</th><th>Closes</th><th>Conf</th>
                         <th className="q-cell">Question</th><th></th>
                       </tr>
@@ -447,6 +458,7 @@
                         return (
                           <tr key={m.id}>
                             <td>{r.side && <span className={"side " + r.side.toLowerCase()}>{r.side}</span>}</td>
+                            <td>{m.exchange && <span className={"tag exch " + m.exchange}>{m.exchange}</span>}</td>
                             <td>{pct(m.market_prob)}</td>
                             <td>{pct(r.best_bid)}{r.bid_depth != null && r.best_bid != null &&
                               <span className="dim" title={`${Math.round(r.bid_depth).toLocaleString()} shares · $${Math.round(r.bid_depth * r.best_bid).toLocaleString()}`}> ·{shares(r.bid_depth)}</span>}</td>
@@ -780,6 +792,10 @@
             {provider && provider.openai_exhausted && (
               <div className="banner-exhausted">
                 ⚠ OpenAI credits exhausted — set <code>LLM_PROVIDER=anthropic</code> in <code>.env</code> and restart the app to continue with Claude.
+                {" "}Topped up your OpenAI credits?{" "}
+                <button onClick={async () => { try { await API.resetProvider(); setProvider(await API.getProvider()); } catch (e) {} }}>
+                  Retry OpenAI
+                </button>
               </div>
             )}
           </header>

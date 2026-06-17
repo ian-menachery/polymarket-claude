@@ -226,3 +226,33 @@ def with_retry(fn, max_retries=3):
                 raise
             time.sleep(2 ** attempt * 5)
 ```
+
+---
+
+## Kalshi Trade API
+
+**Base URL:** `https://api.elections.kalshi.com/trade-api/v2`
+**Auth:** None for public reads (markets, order books). Optional RSA-PSS request signing
+via `KALSHI_API_KEY` + `KALSHI_KEY_FILE` (this tool never trades, so it stays anonymous).
+
+### GET /markets/{ticker}/orderbook
+
+Live order book for one market, keyed by **ticker** (Kalshi has no CLOB token id).
+
+```json
+{
+  "orderbook": {
+    "yes": [[62, 1200], [61, 800]],
+    "no":  [[37, 1500], [36, 900]]
+  }
+}
+```
+
+- Prices are integer **cents** (1–99); divide by 100 for a 0–1 probability.
+- `yes` = resting bids to **buy YES**; `no` = resting bids to **buy NO**. Either side may be
+  `null`/absent (one-sided book).
+- To price a YES purchase you cross the `no` side: a NO bid at `c`¢ lets you buy YES at
+  `(100 − c)`¢. `kalshi._parse_orderbook` does this inversion, producing a YES-centric `Book`
+  (YES bids from `yes`, YES asks from inverted `no`) identical in shape to Polymarket's, so the
+  scanner's VWAP-fill math is exchange-agnostic. A one-sided book returns `None` → the scanner
+  falls back to the mid price (`executable=False`).

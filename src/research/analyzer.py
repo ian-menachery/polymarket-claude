@@ -91,6 +91,18 @@ def openai_exhausted() -> bool:
     return _openai_exhausted
 
 
+def reset_openai_exhausted() -> None:
+    """Clear the OpenAI quota-exhaustion latch (e.g. after credits are topped up).
+
+    The latch (set in ``_provider_error``) blocks silent fallback and normally clears only
+    on restart; this lets the running process retry OpenAI without one.
+    """
+    global _openai_exhausted
+    if _openai_exhausted:
+        _log.info("OpenAI exhaustion latch cleared; next OpenAI call will retry the provider.")
+    _openai_exhausted = False
+
+
 def validate_openai_model() -> None:
     """Warn (once, at startup) if OPENAI_MODEL is unrecognized — only when it'd be used.
 

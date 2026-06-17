@@ -38,6 +38,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from research.models import Market
+from research.polymarket import Book  # reuse the YES-centric order-book shape (no import cycle)
 
 _log = logging.getLogger(__name__)
 
@@ -224,6 +225,60 @@ def normalize_market(raw: dict) -> Market | None:
         tags=[km.category] if km.category else [],
         description=km.subtitle or km.yes_sub_title,
     )
+
+
+def _orderbook_side(levels: object, *, invert: bool) -> list[tuple[float, float]]:
+    """Parse one Kalshi ``[[price_cents, count], ...]`` side into ``(price, size)`` pairs.
+
+    Kalshi prices are integer **cents** (1–99); we scale to 0–1 dollars. ``invert=True``
+    flips a NO-bid price to its YES-ask equivalent (a NO bid at ``c``¢ lets you BUY YES at
+    ``100 - c``¢). Levels with an out-of-range price or non-positive size are dropped.
+    Sorted best-first: YES bids descending, YES asks ascending.
+    """
+    parsed: list[tuple[float, float]] = []
+    for lvl in levels or []:
+        try:
+            cents = float(lvl[0])
+            size = float(lvl[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not (0 < cents < 100) or size <= 0:
+            continue
+        price = (100.0 - cents) / 100.0 if invert else cents / 100.0
+        parsed.append((price, size))
+    parsed.sort(key=lambda ps: ps[0], reverse=not invert)  # asks ascending, bids descending
+    return parsed
+
+
+def _parse_orderbook(book: dict) -> Book | None:
+    """Build a YES-centric ``Book`` from Kalshi's ``{"yes": [...], "no": [...]}`` payload.
+
+    ``yes`` are resting bids to buy YES (our YES bids); ``no`` are resting bids to buy NO,
+    which become YES asks once inverted. Returns None for a one-sided book so the scanner
+    falls back to the mid — matching ``polymarket.fetch_book``.
+    """
+    bids = _orderbook_side(book.get("yes"), invert=False)
+    asks = _orderbook_side(book.get("no"), invert=True)
+    if not bids or not asks:
+        return None
+    best_bid, best_ask = bids[0][0], asks[0][0]
+    bid_depth = sum(s for p, s in bids if p == best_bid)
+    ask_depth = sum(s for p, s in asks if p == best_ask)
+    return Book(bids, asks, best_bid, best_ask, bid_depth, ask_depth)
+
+
+def fetch_book(ticker: str) -> Book | None:
+    """Live order book for a Kalshi market (by ticker), or None on failure/one-sided book.
+
+    Reads ``GET /markets/{ticker}/orderbook`` and parses it into the same YES-centric
+    ``Book`` Polymarket returns, so the scanner's VWAP-fill logic is exchange-agnostic.
+    """
+    try:
+        with KalshiClient() as client:
+            body = client.get(f"/markets/{ticker}/orderbook") or {}
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+    return _parse_orderbook(body.get("orderbook") or {})
 
 
 def _fetch_page(

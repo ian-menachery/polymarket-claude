@@ -95,6 +95,40 @@ def _fetch_active_markets(max_markets: int) -> list[Market]:
     return polymarket.fetch_all_active(max_markets=max_markets)
 
 
+def _fetch_book(m: Market) -> polymarket.Book | None:
+    """Order book for a market, exchange-aware; None if unavailable (caller uses mid).
+
+    Polymarket books key off the CLOB ``yes_token_id``; Kalshi books key off the ticker
+    (``m.id``) and come back already in the same YES-centric ``Book`` shape. A book hiccup
+    must not kill the scan, so failures are logged at debug and degrade to None.
+    """
+    try:
+        if m.exchange == "kalshi":
+            return kalshi.fetch_book(m.id)  # m.id is the Kalshi ticker
+        if m.yes_token_id:
+            return polymarket.fetch_book(m.yes_token_id)
+    except Exception as e:  # noqa: BLE001 — a book hiccup shouldn't kill the scan
+        _log.debug("order-book fetch failed for %s (%s): %s", m.id, m.exchange, e)
+    return None
+
+
+def _book_fills(book: polymarket.Book, target: float) -> dict:
+    """Top-of-book + VWAP fills to deploy ``target`` USD on each side.
+
+    BUY YES into the asks; bet NO into the bids (NO cost per share = 1 - yes bid). Both
+    ladders are best-first. Pure given a ``Book`` — testable without a network call.
+    """
+    yes_fill = polymarket.vwap_fill([(p, s) for p, s in book.asks], target)
+    no_fill = polymarket.vwap_fill([(1.0 - p, s) for p, s in book.bids], target)
+    return {
+        "best_bid": book.best_bid, "best_ask": book.best_ask,
+        "bid_depth": book.bid_depth, "ask_depth": book.ask_depth,
+        "yes_fill": yes_fill, "no_fill": no_fill,
+        "yes_cost": yes_fill.price if yes_fill else None,
+        "no_cost": no_fill.price if no_fill else None,
+    }
+
+
 def scan(req: ScanRequest) -> list[ScanResult]:
     """Run a batch EV scan and return results sorted by annualized EV (desc)."""
     recals = calibration.build_recalibrators()  # one per model; fit once, applied per market
@@ -151,25 +185,16 @@ def scan(req: ScanRequest) -> list[ScanResult]:
             continue
 
         # Only survivors hit the order book; fall back to mid if it's unavailable.
-        book = None
-        if m.yes_token_id:
-            try:
-                book = polymarket.fetch_book(m.yes_token_id)
-            except Exception:  # noqa: BLE001 — a CLOB hiccup shouldn't kill the scan
-                book = None
-
+        book = _fetch_book(m)
         best_bid = best_ask = bid_depth = ask_depth = None
         yes_cost = no_cost = None
         yes_fill = no_fill = None
         if book:
-            best_bid, best_ask = book.best_bid, book.best_ask
-            bid_depth, ask_depth = book.bid_depth, book.ask_depth
-            # VWAP fill to deploy `target` USD: BUY YES into the asks; bet NO into the
-            # bids (NO cost per share = 1 - yes bid). Both ladders are best-first.
-            yes_fill = polymarket.vwap_fill([(p, s) for p, s in book.asks], target)
-            no_fill = polymarket.vwap_fill([(1.0 - p, s) for p, s in book.bids], target)
-            yes_cost = yes_fill.price if yes_fill else None
-            no_cost = no_fill.price if no_fill else None
+            f = _book_fills(book, target)
+            best_bid, best_ask = f["best_bid"], f["best_ask"]
+            bid_depth, ask_depth = f["bid_depth"], f["ask_depth"]
+            yes_fill, no_fill = f["yes_fill"], f["no_fill"]
+            yes_cost, no_cost = f["yes_cost"], f["no_cost"]
 
         ev = _ev_fields(m, calibrated_p, yes_cost, no_cost, req.min_days_to_close)
         if ev["annualized_ev"] is None:  # below the days floor (defensive; pre-filtered)
@@ -208,7 +233,8 @@ def sweep_resolutions() -> int:
     for market_id in db.get_unresolved_analyzed_market_ids():
         try:
             outcome = polymarket.fetch_resolution(market_id)
-        except Exception:  # noqa: BLE001 — transient; next sweep retries
+        except Exception as e:  # noqa: BLE001 — transient; next sweep retries
+            _log.warning("resolution fetch failed for %s: %s", market_id, e)
             continue
         if outcome is not None:
             db.mark_resolution(market_id, outcome)

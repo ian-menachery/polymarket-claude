@@ -58,7 +58,7 @@ Goal: automation, intelligence, and portfolio simulation.
 - [ ] Webhook/Slack notification for high-divergence markets
 
 ## Future polish
-- [ ] Add log rotation or size cap for data/app.log (currently unbounded append)
+- [x] Add log rotation or size cap for data/app.log (currently unbounded append) — RotatingFileHandler via `app._init_logging()`
 - [x] Exclude analyses where claude_prob=1.0 and summary contains '1%' from calibration queries (parser-corrupted rows, id=14) — filtered via `db._NOT_CORRUPTED`
 
 ## Won't do (scope limits)

@@ -6,6 +6,7 @@ import pytest
 
 from conftest import make_market
 from research import scanner
+from research.polymarket import Book
 
 
 class TestEvFields:
@@ -64,6 +65,32 @@ class TestEvFields:
         assert out["ev_pct"] is None
         assert out["kelly"] is None
         assert out["annualized_ev"] is None
+
+
+class TestBookFills:
+    def _book(self) -> Book:
+        # asks best-first (ascending), bids best-first (descending).
+        return Book(
+            bids=[(0.45, 1000.0)], asks=[(0.55, 1000.0)],
+            best_bid=0.45, best_ask=0.55, bid_depth=1000.0, ask_depth=1000.0,
+        )
+
+    def test_top_of_book_passthrough(self) -> None:
+        f = scanner._book_fills(self._book(), target=50.0)
+        assert f["best_bid"] == 0.45
+        assert f["best_ask"] == 0.55
+        assert f["bid_depth"] == 1000.0
+
+    def test_yes_cost_is_ask_vwap(self) -> None:
+        f = scanner._book_fills(self._book(), target=50.0)
+        # $50 into a deep 0.55 ask level => VWAP 0.55.
+        assert f["yes_cost"] == pytest.approx(0.55)
+        assert f["yes_fill"].fully_filled is True
+
+    def test_no_cost_is_one_minus_bid_vwap(self) -> None:
+        f = scanner._book_fills(self._book(), target=50.0)
+        # Bet NO into the 0.45 bid => cost per share 1 - 0.45 = 0.55.
+        assert f["no_cost"] == pytest.approx(0.55)
 
 
 class TestRefuteVerdict:
