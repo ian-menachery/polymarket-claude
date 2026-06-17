@@ -1,5 +1,7 @@
 # Polymarket Research Copilot
 
+[![CI](https://github.com/ian-menachery/polymarket-claude/actions/workflows/ci.yml/badge.svg)](https://github.com/ian-menachery/polymarket-claude/actions/workflows/ci.yml)
+
 A local research tool that fetches live **Polymarket** and **Kalshi** prediction markets, asks an
 LLM (OpenAI or Anthropic, with web search) for a calibrated probability estimate, and surfaces the
 markets where the model's estimate diverges most from the current market price.
@@ -71,3 +73,7 @@ All runtime knobs are environment variables (see [`.env.example`](.env.example) 
 provider/model, exchange selection, volume/liquidity/divergence gates, target position size,
 scan & resolution & stale-reanalysis cadences, and alert thresholds/webhook. API keys are read from
 the environment only and never committed (`.env` is gitignored).
+
+## License
+
+[MIT](LICENSE) © Ian Menachery
