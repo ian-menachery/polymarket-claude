@@ -61,6 +61,7 @@ def _init_logging() -> None:
 
 load_dotenv()
 _init_logging()
+_log = logging.getLogger(__name__)
 analyzer.validate_openai_model()  # warn early on a typo'd OPENAI_MODEL (provider-gated)
 db.init_db()
 
@@ -200,7 +201,11 @@ def calibration_report() -> Any:
 
 @app.get("/api/scan-history")
 def scan_history() -> Any:
-    return jsonify(scheduler.history())
+    try:
+        return jsonify(scheduler.history())
+    except Exception as e:  # noqa: BLE001 — a dashboard read shouldn't 500
+        _log.warning("scan-history read failed: %s", e)
+        return jsonify({"total_runs": 0, "last_runs": []})
 
 
 @app.get("/api/signals")
@@ -213,7 +218,11 @@ def signals() -> Any:
 
 @app.get("/api/alerts")
 def alerts() -> Any:
-    return jsonify(scanner.read_alerts())
+    try:
+        return jsonify(scanner.read_alerts())
+    except Exception as e:  # noqa: BLE001 — a dashboard read shouldn't 500
+        _log.warning("alerts read failed: %s", e)
+        return jsonify([])
 
 
 @app.get("/api/provider")

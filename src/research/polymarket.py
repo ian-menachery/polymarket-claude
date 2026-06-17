@@ -24,6 +24,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from research.models import Market
+from research.retry import call_with_retries
 
 DEFAULT_BASE_URL = "https://gamma-api.polymarket.com"
 CLOB_BASE_URL = "https://clob.polymarket.com"
@@ -31,6 +32,22 @@ CLOB_BASE_URL = "https://clob.polymarket.com"
 # Polymarket sometimes emits bare timezone offsets (e.g. `+00` instead of
 # `+00:00`), which datetime.fromisoformat rejects.
 _BARE_OFFSET_RE = re.compile(r"[+-]\d{2}$")
+
+# Transient HTTP failures worth retrying: connection/timeout (TransportError) and 429/5xx.
+# A 4xx other than 429 is the caller's fault and won't change on retry, so give up on it.
+_RETRYABLE_HTTP = (httpx.TransportError, httpx.HTTPStatusError)
+
+
+def _http_giveup(e: BaseException) -> bool:
+    if isinstance(e, httpx.HTTPStatusError):
+        code = e.response.status_code
+        return code < 500 and code != 429
+    return False
+
+
+def retry_http(fn: Any) -> Any:
+    """Run ``fn`` with retries on transient HTTP errors (shared by the Gamma + Kalshi clients)."""
+    return call_with_retries(fn, retry_on=_RETRYABLE_HTTP, giveup=_http_giveup)
 
 
 class GammaClient:
@@ -52,9 +69,13 @@ class GammaClient:
 
     def get(self, path: str, **params: Any) -> Any:
         time.sleep(self._request_delay_s)
-        r = self._client.get(path, params=params)
-        r.raise_for_status()
-        return r.json()
+
+        def do() -> Any:
+            r = self._client.get(path, params=params)
+            r.raise_for_status()
+            return r.json()
+
+        return retry_http(do)
 
     def close(self) -> None:
         self._client.close()
@@ -353,9 +374,12 @@ def fetch_book(yes_token_id: str) -> Book | None:
     """
     try:
         with httpx.Client(base_url=CLOB_BASE_URL, timeout=15.0) as client:
-            r = client.get("/book", params={"token_id": yes_token_id})
-            r.raise_for_status()
-            body = r.json() or {}
+            def do() -> dict:
+                r = client.get("/book", params={"token_id": yes_token_id})
+                r.raise_for_status()
+                return r.json() or {}
+
+            body = retry_http(do)  # retry transient 429/5xx/timeouts; a real miss still -> None
     except (httpx.HTTPError, ValueError, TypeError):
         return None
 

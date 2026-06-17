@@ -4,7 +4,31 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from research.models import Market
+
+
+@pytest.fixture
+def temp_db(tmp_path, monkeypatch):
+    """Point the DB layer at a throwaway sqlite file and create the schema.
+
+    ``db._db_path()`` reads RESEARCH_DB_PATH at call time, so every db call in the test
+    (and any route handler) hits this temp file — no real data is touched.
+    """
+    monkeypatch.setenv("RESEARCH_DB_PATH", str(tmp_path / "test.db"))
+    from research import db
+    db.init_db()
+    return db
+
+
+@pytest.fixture
+def client(temp_db):
+    """Flask test client wired to the temp DB (imported after RESEARCH_DB_PATH is set)."""
+    from research import app as appmod
+    appmod.app.config["TESTING"] = True
+    with appmod.app.test_client() as c:
+        yield c
 
 
 def make_market(

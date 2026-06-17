@@ -268,9 +268,10 @@ def _anthropic_complete(system: str, user: str) -> str:
             try:
                 return _get_client().messages.create(
                     model=model, max_tokens=MAX_TOKENS, tools=[WEB_SEARCH_TOOL],
-                    system=system, messages=messages,
+                    system=system, messages=messages, timeout=120.0,
                 )
-            except anthropic.RateLimitError:
+            except (anthropic.RateLimitError, anthropic.APITimeoutError,
+                    anthropic.APIConnectionError):
                 if attempt == _MAX_RETRIES - 1:
                     raise
                 time.sleep(2**attempt * 5)
@@ -292,15 +293,26 @@ def _anthropic_complete(system: str, user: str) -> str:
 def _openai_complete(system: str, user: str) -> str:
     """OpenAI Responses API with the web_search tool; returns output_text.
 
-    Raises on rate limit (incl. insufficient_quota); the caller maps it via _provider_error.
+    Retries transient rate-limit/timeout/connection errors with the same backoff as the
+    Anthropic path. A persistent rate limit (incl. insufficient_quota) is re-raised on the
+    last attempt; the caller maps it via _provider_error (which latches openai_exhausted).
     """
-    return _get_openai_client().responses.create(
-        model=os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_MODEL),
-        tools=[{"type": "web_search"}],
-        instructions=system,
-        input=user,
-        max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
-    ).output_text
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return _get_openai_client().responses.create(
+                model=os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_MODEL),
+                tools=[{"type": "web_search"}],
+                instructions=system,
+                input=user,
+                max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
+                timeout=120.0,
+            ).output_text
+        except (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError) as e:
+            # Quota exhaustion is permanent — don't burn retries (the caller latches it).
+            if attempt == _MAX_RETRIES - 1 or _is_quota_error(e):
+                raise
+            time.sleep(2**attempt * 5)
+    raise RuntimeError("unreachable")  # pragma: no cover
 
 
 def _complete(system: str, user: str, provider: str | None = None) -> str:

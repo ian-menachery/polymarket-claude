@@ -60,6 +60,9 @@ CREATE TABLE IF NOT EXISTS analyses (
 CREATE INDEX IF NOT EXISTS idx_analyses_market_id  ON analyses(market_id);
 CREATE INDEX IF NOT EXISTS idx_analyses_created_at ON analyses(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_analyses_edge_mag   ON analyses(edge_magnitude DESC);
+-- latest-per-market (get_markets_with_latest_analysis) and resolution sweeps / calibration reads
+CREATE INDEX IF NOT EXISTS idx_analyses_market_latest ON analyses(market_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_analyses_resolved      ON analyses(resolved);
 
 CREATE TABLE IF NOT EXISTS signals (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,11 +122,20 @@ def _db_path() -> Path:
 
 @contextmanager
 def _conn() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit on success, always close."""
+    """Open a connection, commit on success, always close.
+
+    WAL + a 30s busy timeout make the threaded Flask server and the background scheduler
+    safe to write concurrently: under WAL readers never block the writer, and busy_timeout
+    turns transient write contention into a short wait instead of an immediate
+    ``database is locked`` crash. WAL is a persistent property of the DB file; re-setting it
+    per connection is cheap and idempotent.
+    """
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn

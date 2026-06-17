@@ -38,7 +38,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from research.models import Market
-from research.polymarket import Book  # reuse the YES-centric order-book shape (no import cycle)
+from research.polymarket import Book, retry_http  # reuse YES-centric Book + shared HTTP retry
 
 _log = logging.getLogger(__name__)
 
@@ -112,9 +112,13 @@ class KalshiClient:
         headers: dict[str, str] = {}
         if self._key_id and self._key_path:  # opt-in signing; public reads skip this
             headers = _sign_headers(self._key_id, self._key_path, "GET", API_PREFIX + path)
-        r = self._client.get(path, params=params, headers=headers)
-        r.raise_for_status()
-        return r.json()
+
+        def do() -> Any:
+            r = self._client.get(path, params=params, headers=headers)
+            r.raise_for_status()
+            return r.json()
+
+        return retry_http(do)
 
     def close(self) -> None:
         self._client.close()
