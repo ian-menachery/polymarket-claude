@@ -1,6 +1,6 @@
 # Polymarket Research Copilot
 
-[![CI](https://github.com/ian-menachery/polymarket-claude/actions/workflows/ci.yml/badge.svg)](https://github.com/ian-menachery/polymarket-claude/actions/workflows/ci.yml)
+[![CI](https://github.com/ian-menachery/prediction-market-research-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/ian-menachery/prediction-market-research-assistant/actions/workflows/ci.yml)
 
 A local research tool that fetches live **Polymarket** and **Kalshi** prediction markets, asks an
 LLM (OpenAI or Anthropic, with web search) for a calibrated probability estimate, and surfaces the
