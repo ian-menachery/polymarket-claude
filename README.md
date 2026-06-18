@@ -11,6 +11,16 @@ against the exchanges and never places orders.
 
 > **Disclaimer:** Estimates come from an LLM and are not financial advice. EV figures are directional.
 
+## Demo
+
+| EV divergence scanner | Model leaderboard | Track record |
+| --- | --- | --- |
+| ![Scanner](docs/img/scanner.png) | ![Leaderboard](docs/img/leaderboard.png) | ![Performance](docs/img/performance.png) |
+
+<sub>The scanner ranks markets by annualized EV; the leaderboard scores each LLM's resolved
+forecasts (Brier / log-loss / Brier skill); the track record turns logged signals into an
+equity curve. See [`docs/img/`](docs/img/) for how to regenerate these.</sub>
+
 ## What it does
 
 - **Dual exchange** — normalizes Polymarket (Gamma API) and Kalshi markets into one model; scan
@@ -24,12 +34,38 @@ against the exchanges and never places orders.
   top-ranked edges before they're trusted.
 - **Calibration tracking** — temperature-scaling recalibration per model, reliability curves,
   Brier/log-loss, and a CSV export (with forecast horizon) for the companion calibration tracker.
-- **Forward signals & P&L** — logs actionable edges at scan time and scores realized P&L once the
-  market resolves (the real calibration flywheel).
+- **Model leaderboard** — an apples-to-apples LLM eval: each model scored on *its own* resolved
+  forecasts (Brier, log-loss, directional accuracy, and Brier skill vs. the base-rate baseline).
+- **Forward signals & track record** — logs actionable edges at scan time, scores realized P&L
+  once the market resolves, and rolls them into an equity curve with return-on-cost, per-trade
+  Sharpe, max drawdown, and win rate (the real calibration flywheel — lookahead-free).
 - **Background automation** — stdlib scheduler (no APScheduler) for periodic scans, resolution
   sweeps, and optional stale re-analysis; high-divergence alerts to a JSONL log + optional webhook.
 - **Single-file web UI** — Flask serves a React (CDN) frontend at `/`: markets, scanner, signals,
-  alerts, and calibration views.
+  performance, calibration, and leaderboard views.
+
+## Technical highlights
+
+A few of the more interesting engineering decisions:
+
+- **Runtime-swappable dual-LLM abstraction** — one analysis engine targets both the OpenAI
+  Responses API and the Anthropic Messages API (each with server-side web search). The provider is
+  an env var, not a code path; every estimate records the model that produced it so calibration
+  stays valid across a switch. Quota exhaustion latches an explicit error rather than silently
+  failing over.
+- **Calibration as temperature scaling** — `p_cal = σ(logit(p) / T)`, with `T` fit by ternary
+  search to minimize log-loss over resolved markets, plus reliability binning and a Brier-skill
+  leaderboard. Pure stdlib, fully unit-tested.
+- **Executable, depth-aware pricing** — EV is computed against a volume-weighted fill walked over
+  the live order book for a target position size, not the top-of-book mid, so thin books yield a
+  truer (worse) cost.
+- **Cross-model adversarial refutation** — top edges get a skeptical second pass that can run on
+  the *opposite* provider, derived deterministically rather than self-reported.
+- **Concurrency without async** — a threaded Flask server and a stdlib background scheduler share
+  one SQLite file safely via WAL + a busy timeout (no asyncio, no Postgres).
+- **Enforced module boundaries** — HTTP lives only in the exchange clients, SQL only in `db.py`,
+  LLM calls only in `analyzer.py`; routes stay thin. ~3K LOC, type-hinted throughout, with CI
+  (ruff + pytest) on every push.
 
 ## Stack
 
@@ -50,7 +86,7 @@ make run                  # → http://localhost:5000
 | --- | --- |
 | `make install` / `make install-dev` | runtime deps / dev deps (pytest, ruff, pip-tools) |
 | `make run` | start the Flask app on :5000 |
-| `make test` | run the test suite (100+ unit/integration tests) |
+| `make test` | run the test suite (130+ unit/integration tests) |
 | `make lint` | ruff over `src` + `tests` |
 | `make lock` | regenerate pinned `requirements*.lock` |
 
