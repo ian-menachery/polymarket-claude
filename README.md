@@ -13,13 +13,15 @@ against the exchanges and never places orders.
 
 ## Demo
 
-| EV divergence scanner | Model leaderboard | Track record |
-| --- | --- | --- |
-| ![Scanner](docs/img/scanner.png) | ![Leaderboard](docs/img/leaderboard.png) | ![Performance](docs/img/performance.png) |
+| Markets — model vs. the market | EV divergence scanner |
+| --- | --- |
+| ![Markets](docs/img/markets.png) | ![Scanner](docs/img/scanner.png) |
 
-<sub>The scanner ranks markets by annualized EV; the leaderboard scores each LLM's resolved
-forecasts (Brier / log-loss / Brier skill); the track record turns logged signals into an
-equity curve. See [`docs/img/`](docs/img/) for how to regenerate these.</sub>
+<sub>The markets view shows each LLM estimate against the live price with a divergence badge;
+the scanner ranks markets by annualized EV off the executable order-book price. The
+**Leaderboard** (per-model Brier / log-loss / Brier skill) and **Performance** (equity-curve
+track record) views fill in as analyzed markets resolve. See [`docs/img/`](docs/img/) for how to
+regenerate these.</sub>
 
 ## What it does
 
