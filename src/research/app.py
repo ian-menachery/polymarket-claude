@@ -93,6 +93,12 @@ def index() -> Any:
     )
 
 
+@app.get("/js/<path:filename>")
+def frontend_js(filename: str) -> Any:
+    """Serve the split frontend JS (api.js / views.js / app.js) loaded by index.html."""
+    return send_from_directory(_FRONTEND_DIR / "js", filename)
+
+
 # --- API -----------------------------------------------------------------------
 
 
