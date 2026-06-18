@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Python deps. The .txt files carry the >= ranges; Dependabot bumps those and CI
+  # (ruff + pytest + coverage + pip-audit) gates each PR. Regenerate the .lock files with
+  # `make lock` when merging. Minor/patch bumps are grouped to cut PR noise; majors come
+  # separately so they get a deliberate look.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # Keep the GitHub Actions in ci.yml current (the checkout/setup-python bumps we did by hand).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

@@ -25,5 +25,11 @@ jobs:
       - name: Lint (ruff)
         run: ruff check src tests
 
-      - name: Test (pytest)
-        run: pytest -q
+      - name: Test (pytest + coverage)
+        run: pytest -q --cov=research --cov-report=term-missing --cov-fail-under=55
+
+      - name: Dependency CVE scan (pip-audit)
+        # Advisory: reports known CVEs in the pinned set without blocking the build (transitive
+        # CVEs are often unfixable here). Dependabot opens the actual upgrade PRs.
+        continue-on-error: true
+        run: pip-audit -r requirements.lock -r requirements-dev.lock

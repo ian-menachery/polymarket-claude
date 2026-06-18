@@ -16,3 +16,23 @@ target-version = "py311"
 # Default rules plus flake8-blind-except (BLE) so the deliberate broad catches keep
 # their explanatory `# noqa: BLE001` and stray ones get flagged.
 extend-select = ["BLE"]
+
+[tool.mypy]
+# Validates the type hints the code already carries (every function is annotated).
+# Pragmatic, not --strict: third-party SDKs (anthropic/openai/cryptography) ship partial or
+# strict-but-awkward stubs, so a few call sites use targeted `# type: ignore[...]`.
+python_version = "3.12"
+mypy_path = "src"
+ignore_missing_imports = true   # some SDKs/transitive deps ship no stubs
+disallow_untyped_defs = true    # enforce the existing "annotate every function" convention
+no_implicit_optional = true
+warn_redundant_casts = true
+
+[tool.coverage.run]
+source = ["research"]
+
+[tool.coverage.report]
+show_missing = true
+# Floor sits just below the current ~60% so it can't regress; ratchet up over time. The
+# network/LLM-heavy modules (polymarket/kalshi/scanner/scheduler) are the uncovered remainder.
+fail_under = 55

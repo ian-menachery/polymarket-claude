@@ -1,4 +1,4 @@
-.PHONY: install install-dev install-locked run test lint lock
+.PHONY: install install-dev install-locked run test cov lint typecheck lock
 
 install:
 	pip install -r requirements.txt
@@ -18,8 +18,16 @@ lock:
 test:
 	PYTHONPATH=src pytest -q
 
+# Same tests with coverage + the fail-under floor from pyproject ([tool.coverage.report]).
+cov:
+	PYTHONPATH=src pytest -q --cov=research --cov-report=term-missing
+
 lint:
 	ruff check src tests
+
+# Static type checking — validates the hints the code already carries (config in pyproject).
+typecheck:
+	mypy src
 
 # src/ is on PYTHONPATH so `research` resolves as a top-level package.
 # (app.py is scaffolded in a later Phase 1 slice.)
