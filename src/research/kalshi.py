@@ -285,6 +285,27 @@ def fetch_book(ticker: str) -> Book | None:
     return _parse_orderbook(body.get("orderbook") or {})
 
 
+def fetch_resolution(ticker: str) -> bool | None:
+    """YES/NO resolution for a settled Kalshi market (by ticker), else ``None``.
+
+    Reads ``GET /markets/{ticker}`` and maps the ``result`` field (``"yes"``/``"no"``) to a bool.
+    ``None`` when the market isn't settled yet, the result is void/unknown, or the lookup fails —
+    the caller retries on the next sweep. Mirrors ``polymarket.fetch_resolution``'s contract so the
+    resolution sweep is exchange-agnostic.
+    """
+    try:
+        with KalshiClient() as client:
+            body = client.get(f"/markets/{ticker}") or {}
+    except (httpx.HTTPError, ValueError, TypeError):
+        return None
+    result = str((body.get("market") or {}).get("result") or "").strip().lower()
+    if result == "yes":
+        return True
+    if result == "no":
+        return False
+    return None  # "" (still open), "void", or anything unexpected
+
+
 def _fetch_page(
     client: KalshiClient, limit: int, cursor: str | None, status: str
 ) -> tuple[list[dict], str]:

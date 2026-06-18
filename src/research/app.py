@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from flask import Flask, Response, jsonify, request, send_from_directory
 from pydantic import ValidationError
 
-from research import analyzer, calibration, db, performance, polymarket, scanner, scheduler
+from research import analyzer, calibration, db, exchanges, performance, scanner, scheduler
 from research.models import Analysis, CalibrationReport, Market, MarketWithAnalysis, ScanRequest
 
 _FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
@@ -162,7 +162,7 @@ def analyze(market_id: str) -> Any:
 def refresh() -> Any:
     max_markets = int(os.getenv("MAX_SCAN_MARKETS", "100"))
     try:
-        markets = polymarket.fetch_all_active(max_markets=max_markets)
+        markets = exchanges.fetch_active(max_markets=max_markets)  # honors EXCHANGE (was Polymarket-only)
     except Exception as e:  # noqa: BLE001 — surface upstream failures as JSON, not a 500 page
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 502
     db.upsert_markets(markets)

@@ -20,7 +20,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from research import analyzer, calibration, db, kalshi, polymarket
+from research import analyzer, calibration, db, exchanges, polymarket
 from research.models import Market, ScanRequest, ScanResult, Signal
 
 _log = logging.getLogger(__name__)
@@ -77,41 +77,6 @@ def _ev_fields(
             "price_paid": price_paid, "executable": executable}
 
 
-def _fetch_active_markets(max_markets: int) -> list[Market]:
-    """Fetch active markets from the exchange(s) the ``EXCHANGE`` env var selects.
-
-    ``polymarket`` (default) | ``kalshi`` | ``both``. For ``both`` we pull up to
-    ``max_markets`` from each and concatenate — the combined list can exceed
-    ``max_markets``, but the scanner's pre-filters bound how many are actually analyzed.
-    """
-    exchange = os.getenv("EXCHANGE", "polymarket").strip().lower()
-    if exchange == "kalshi":
-        return kalshi.fetch_all_active(max_markets=max_markets)
-    if exchange == "both":
-        return (
-            polymarket.fetch_all_active(max_markets=max_markets)
-            + kalshi.fetch_all_active(max_markets=max_markets)
-        )
-    return polymarket.fetch_all_active(max_markets=max_markets)
-
-
-def _fetch_book(m: Market) -> polymarket.Book | None:
-    """Order book for a market, exchange-aware; None if unavailable (caller uses mid).
-
-    Polymarket books key off the CLOB ``yes_token_id``; Kalshi books key off the ticker
-    (``m.id``) and come back already in the same YES-centric ``Book`` shape. A book hiccup
-    must not kill the scan, so failures are logged at debug and degrade to None.
-    """
-    try:
-        if m.exchange == "kalshi":
-            return kalshi.fetch_book(m.id)  # m.id is the Kalshi ticker
-        if m.yes_token_id:
-            return polymarket.fetch_book(m.yes_token_id)
-    except Exception as e:  # noqa: BLE001 — a book hiccup shouldn't kill the scan
-        _log.debug("order-book fetch failed for %s (%s): %s", m.id, m.exchange, e)
-    return None
-
-
 def _book_fills(book: polymarket.Book, target: float) -> dict:
     """Top-of-book + VWAP fills to deploy ``target`` USD on each side.
 
@@ -132,7 +97,7 @@ def _book_fills(book: polymarket.Book, target: float) -> dict:
 def scan(req: ScanRequest) -> list[ScanResult]:
     """Run a batch EV scan and return results sorted by annualized EV (desc)."""
     recals = calibration.build_recalibrators()  # one per model; fit once, applied per market
-    markets = _fetch_active_markets(req.max_markets)
+    markets = exchanges.fetch_active(req.max_markets)
     db.upsert_markets(markets)  # persist fetched markets (also satisfies the analyses FK)
 
     # Cheap pre-filters first — they bound how many paid Claude calls we make.
@@ -185,7 +150,7 @@ def scan(req: ScanRequest) -> list[ScanResult]:
             continue
 
         # Only survivors hit the order book; fall back to mid if it's unavailable.
-        book = _fetch_book(m)
+        book = exchanges.fetch_book(m)
         best_bid = best_ask = bid_depth = ask_depth = None
         yes_cost = no_cost = None
         yes_fill = no_fill = None
@@ -231,8 +196,11 @@ def sweep_resolutions() -> int:
     """
     resolved = 0
     for market_id in db.get_unresolved_analyzed_market_ids():
+        market = db.get_market(market_id)
+        if market is None:  # analyzed market no longer in the table (shouldn't happen) — skip
+            continue
         try:
-            outcome = polymarket.fetch_resolution(market_id)
+            outcome = exchanges.fetch_resolution(market)  # exchange-aware (Polymarket or Kalshi)
         except Exception as e:  # noqa: BLE001 — transient; next sweep retries
             _log.warning("resolution fetch failed for %s: %s", market_id, e)
             continue
