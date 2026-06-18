@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from research import analyzer, calibration, db, exchanges, polymarket
-from research.models import Market, ScanRequest, ScanResult, Signal
+from research.models import Analysis, Market, ScanRequest, ScanResult, Signal
 
 _log = logging.getLogger(__name__)
 
@@ -94,47 +94,100 @@ def _book_fills(book: polymarket.Book, target: float) -> dict:
     }
 
 
+def _passes_pre(m: Market, req: ScanRequest, kalshi_min_volume: float) -> bool:
+    """Cheap pre-filter — bounds how many paid Claude calls a scan makes.
+
+    Kalshi reports no 24h volume, so it's gated on lifetime ``volume_total`` against its own
+    floor; Polymarket keeps the per-scan 24h-volume gate.
+    """
+    dtc = _days_to_close(m)
+    if m.exchange == "kalshi":
+        vol_ok = (m.volume_total or 0.0) >= kalshi_min_volume
+    else:
+        vol_ok = (m.volume_24h or 0.0) >= req.min_volume_24h
+    return (
+        vol_ok
+        and (m.liquidity or 0.0) >= req.min_liquidity
+        and dtc is not None
+        and dtc >= req.min_days_to_close
+        and (req.category is None or req.category in m.tags)
+    )
+
+
+def _analyze_or_reuse(m: Market, max_age_hours: float, delay: float) -> Analysis | None:
+    """Reuse a recent stored analysis (no API cost) or run a fresh one; None on error/skip."""
+    age = db.get_analysis_age_hours(m.id)
+    if age is not None and age <= max_age_hours:
+        return db.get_latest_analysis(m.id)  # reuse recent
+    analysis = analyzer.analyze_market(m)
+    if analysis.error:
+        return None  # don't persist failures; skip
+    db.save_analysis(analysis)
+    time.sleep(delay)
+    return analysis
+
+
+def _pack_result(
+    m: Market, analysis: Analysis, calibrated_p: float, req: ScanRequest, target: float
+) -> ScanResult | None:
+    """Price the favorable side off the live book (mid fallback) and build a ScanResult.
+
+    Returns None when EV can't be annualized (below the days floor — defensive; pre-filtered).
+    Only called for markets that already cleared the cheap mid-divergence gate.
+    """
+    book = exchanges.fetch_book(m)
+    best_bid = best_ask = bid_depth = ask_depth = None
+    yes_cost = no_cost = None
+    yes_fill = no_fill = None
+    if book:
+        f = _book_fills(book, target)
+        best_bid, best_ask = f["best_bid"], f["best_ask"]
+        bid_depth, ask_depth = f["bid_depth"], f["ask_depth"]
+        yes_fill, no_fill = f["yes_fill"], f["no_fill"]
+        yes_cost, no_cost = f["yes_cost"], f["no_cost"]
+
+    ev = _ev_fields(m, calibrated_p, yes_cost, no_cost, req.min_days_to_close)
+    if ev["annualized_ev"] is None:
+        return None
+    chosen_fill = yes_fill if ev["side"] == "YES" else no_fill
+    return ScanResult(
+        market=m, analysis=analysis, calibrated_prob=calibrated_p,
+        best_bid=best_bid, best_ask=best_ask, bid_depth=bid_depth, ask_depth=ask_depth,
+        fill_shares=chosen_fill.shares if chosen_fill else None,
+        fully_filled=chosen_fill.fully_filled if chosen_fill else False,
+        target_position_usd=target if ev["executable"] else None,
+        **ev,
+    )
+
+
+def _refute_top(results: list[ScanResult], req: ScanRequest, recals: dict, delay: float) -> None:
+    """Adversarial second pass over the top-ranked edges (most worth scrutinizing).
+
+    Mutates each result's ``refutation`` in place — flag-only; edges are never dropped.
+    """
+    for r in results[: req.refute_top]:
+        ref = analyzer.refute_edge(r.market, r.calibrated_prob, original_model=r.analysis.model)
+        time.sleep(delay)
+        if ref.error is None and ref.refuter_prob is not None:
+            recal = recals.get(r.analysis.model) or calibration.identity_recalibrator(r.analysis.model)
+            ref.verdict = _refute_verdict(r.side, r.market.market_prob, recal.apply(ref.refuter_prob))
+        r.refutation = ref
+
+
 def scan(req: ScanRequest) -> list[ScanResult]:
     """Run a batch EV scan and return results sorted by annualized EV (desc)."""
     recals = calibration.build_recalibrators()  # one per model; fit once, applied per market
     markets = exchanges.fetch_active(req.max_markets)
     db.upsert_markets(markets)  # persist fetched markets (also satisfies the analyses FK)
 
-    # Cheap pre-filters first — they bound how many paid Claude calls we make.
     kalshi_min_volume = float(os.getenv("KALSHI_MIN_VOLUME", "5000"))
-
-    def passes_pre(m: Market) -> bool:
-        dtc = _days_to_close(m)
-        # Kalshi reports no 24h volume, so gate it on lifetime volume_total against its own
-        # floor; Polymarket keeps the per-scan 24h-volume gate.
-        if m.exchange == "kalshi":
-            vol_ok = (m.volume_total or 0.0) >= kalshi_min_volume
-        else:
-            vol_ok = (m.volume_24h or 0.0) >= req.min_volume_24h
-        return (
-            vol_ok
-            and (m.liquidity or 0.0) >= req.min_liquidity
-            and dtc is not None
-            and dtc >= req.min_days_to_close
-            and (req.category is None or req.category in m.tags)
-        )
-
-    candidates = [m for m in markets if passes_pre(m)]
+    candidates = [m for m in markets if _passes_pre(m, req, kalshi_min_volume)]
     delay = float(os.getenv("ANALYSIS_DELAY_SECONDS", "1.5"))
     target = float(os.getenv("TARGET_POSITION_USD", "50"))  # VWAP fill sizes EV to this
     results: list[ScanResult] = []
 
     for m in candidates:
-        age = db.get_analysis_age_hours(m.id)
-        if age is not None and age <= req.max_age_hours:
-            analysis = db.get_latest_analysis(m.id)  # reuse recent — no API cost
-        else:
-            analysis = analyzer.analyze_market(m)
-            if analysis.error:
-                continue  # don't persist failures; skip
-            db.save_analysis(analysis)
-            time.sleep(delay)
-
+        analysis = _analyze_or_reuse(m, req.max_age_hours, delay)
         if analysis is None or analysis.claude_prob is None:
             continue
 
@@ -144,46 +197,17 @@ def scan(req: ScanRequest) -> list[ScanResult]:
         mp = m.market_prob
         if mp is None or calibrated_p is None:
             continue
-        # Gate on mid divergence FIRST — cheap, so we make no CLOB call for markets
+        # Gate on mid divergence FIRST — cheap, so we make no order-book call for markets
         # that don't clear the bar.
         if abs(calibrated_p - mp) < req.min_divergence:
             continue
 
-        # Only survivors hit the order book; fall back to mid if it's unavailable.
-        book = exchanges.fetch_book(m)
-        best_bid = best_ask = bid_depth = ask_depth = None
-        yes_cost = no_cost = None
-        yes_fill = no_fill = None
-        if book:
-            f = _book_fills(book, target)
-            best_bid, best_ask = f["best_bid"], f["best_ask"]
-            bid_depth, ask_depth = f["bid_depth"], f["ask_depth"]
-            yes_fill, no_fill = f["yes_fill"], f["no_fill"]
-            yes_cost, no_cost = f["yes_cost"], f["no_cost"]
-
-        ev = _ev_fields(m, calibrated_p, yes_cost, no_cost, req.min_days_to_close)
-        if ev["annualized_ev"] is None:  # below the days floor (defensive; pre-filtered)
-            continue
-        chosen_fill = yes_fill if ev["side"] == "YES" else no_fill
-        results.append(ScanResult(
-            market=m, analysis=analysis, calibrated_prob=calibrated_p,
-            best_bid=best_bid, best_ask=best_ask, bid_depth=bid_depth, ask_depth=ask_depth,
-            fill_shares=chosen_fill.shares if chosen_fill else None,
-            fully_filled=chosen_fill.fully_filled if chosen_fill else False,
-            target_position_usd=target if ev["executable"] else None,
-            **ev,
-        ))
+        result = _pack_result(m, analysis, calibrated_p, req, target)
+        if result is not None:
+            results.append(result)
 
     results.sort(key=lambda r: r.annualized_ev or -1.0, reverse=True)
-
-    # Adversarial second pass over the top-ranked edges (most worth scrutinizing).
-    for r in results[: req.refute_top]:
-        ref = analyzer.refute_edge(r.market, r.calibrated_prob, original_model=r.analysis.model)
-        time.sleep(delay)
-        if ref.error is None and ref.refuter_prob is not None:
-            recal = recals.get(r.analysis.model) or calibration.identity_recalibrator(r.analysis.model)
-            ref.verdict = _refute_verdict(r.side, r.market.market_prob, recal.apply(ref.refuter_prob))
-        r.refutation = ref  # flag-only; edges are not dropped
+    _refute_top(results, req, recals, delay)
     return results
 
 
