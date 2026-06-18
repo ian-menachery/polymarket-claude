@@ -63,7 +63,7 @@ class GammaClient:
         request_delay_s: float = 0.2,
         timeout_s: float = 30.0,
     ) -> None:
-        base_url = base_url or os.getenv("POLYMARKET_API_BASE", DEFAULT_BASE_URL)
+        base_url = base_url or os.getenv("POLYMARKET_API_BASE") or DEFAULT_BASE_URL
         self._client = httpx.Client(base_url=base_url, timeout=timeout_s)
         self._request_delay_s = request_delay_s
 
@@ -321,7 +321,7 @@ def _parse_levels(levels: list, reverse: bool) -> list[tuple[float, float]]:
     return parsed
 
 
-def _best_level(levels: list, pick) -> tuple[float | None, float | None]:
+def _best_level(levels: list, pick: Any) -> tuple[float | None, float | None]:
     """(best_price, depth) from {price,size} levels via ``pick`` (max bids / min asks).
 
     Depth = total shares across every level at the best price (summed, so duplicate

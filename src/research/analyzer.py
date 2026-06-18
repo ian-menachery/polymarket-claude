@@ -267,8 +267,11 @@ def _anthropic_complete(system: str, user: str) -> str:
         for attempt in range(_MAX_RETRIES):
             try:
                 return _get_client().messages.create(
-                    model=model, max_tokens=MAX_TOKENS, tools=[WEB_SEARCH_TOOL],
-                    system=system, messages=messages, timeout=120.0,
+                    model=model, max_tokens=MAX_TOKENS,
+                    tools=[WEB_SEARCH_TOOL],  # type: ignore[list-item]  # SDK ToolParam stub stricter than the runtime accepts
+                    system=system,
+                    messages=messages,  # type: ignore[arg-type]  # list[dict] is valid MessageParam at runtime
+                    timeout=120.0,
                 )
             except (anthropic.RateLimitError, anthropic.APITimeoutError,
                     anthropic.APIConnectionError):
@@ -301,7 +304,7 @@ def _openai_complete(system: str, user: str) -> str:
         try:
             return _get_openai_client().responses.create(
                 model=os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_MODEL),
-                tools=[{"type": "web_search"}],
+                tools=[{"type": "web_search"}],  # type: ignore[typeddict-item]  # valid web_search tool at runtime
                 instructions=system,
                 input=user,
                 max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,

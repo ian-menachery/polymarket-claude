@@ -282,6 +282,7 @@ def save_analysis(analysis: Analysis) -> int:
             f"INSERT INTO analyses ({_ANALYSIS_COLUMNS}) VALUES ({placeholders})",
             _analysis_to_row(analysis),
         )
+        assert cur.lastrowid is not None  # always set after an INSERT
         return int(cur.lastrowid)
 
 
@@ -464,6 +465,7 @@ def save_signal(sig: Signal) -> int:
             f"INSERT INTO signals ({_SIGNAL_COLUMNS}) VALUES ({placeholders})",
             _signal_to_row(sig),
         )
+        assert cur.lastrowid is not None  # always set after an INSERT
         return int(cur.lastrowid)
 
 

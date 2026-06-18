@@ -161,6 +161,7 @@ def analyze(market_id: str) -> Any:
 
     db.save_analysis(result)
     saved = db.get_latest_analysis(market_id)  # round-trip to return the persisted row (with id)
+    assert saved is not None  # just inserted above
     return jsonify(saved.model_dump(mode="json"))
 
 
@@ -197,7 +198,8 @@ def calibration_report() -> Any:
     reports = [
         CalibrationReport(
             model=r.model, n=r.n, calibrated=r.calibrated, temperature=r.temperature,
-            min_n=r.min_n, brier=r.brier, log_loss=r.log_loss, curve=r.curve,
+            min_n=r.min_n, brier=r.brier, log_loss=r.log_loss,
+            curve=r.curve,  # type: ignore[arg-type]  # pydantic coerces the curve dicts to CalibrationBin
         )
         for r in recals.values()
     ]

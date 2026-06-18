@@ -10,6 +10,7 @@ count is surfaced, so the track record stays lookahead-free.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 from research import db
 from research.models import Signal
@@ -54,7 +55,7 @@ def sharpe(returns: list[float]) -> float | None:
     return mean / math.sqrt(var)
 
 
-def _breakdown(signals: list[Signal], key_fn) -> list[dict]:
+def _breakdown(signals: list[Signal], key_fn: Callable[[Signal], object]) -> list[dict]:
     """Group settled signals by a key, with count / P&L / win-rate per group (P&L desc)."""
     groups: dict[str, list[Signal]] = {}
     for s in signals:
@@ -91,14 +92,16 @@ def build_report(signals: list[Signal], open_count: int = 0) -> dict:
     if n == 0:
         return _empty(open_count)
 
-    wins = [s for s in settled if s.pnl > 0]
-    losses = [s for s in settled if s.pnl <= 0]
+    # `settled` already filtered pnl is not None; `(s.pnl or 0.0)` re-narrows for the type
+    # checker (and a 0.0 pnl behaves identically either way).
+    wins = [s for s in settled if (s.pnl or 0.0) > 0]
+    losses = [s for s in settled if (s.pnl or 0.0) <= 0]
     returns = [_trade_return(s) for s in settled]
 
     acc = 0.0
     curve: list[dict] = []
     for i, s in enumerate(settled):
-        acc += s.pnl
+        acc += s.pnl or 0.0
         curve.append({
             "i": i,
             "t": s.created_at.isoformat(),
@@ -106,10 +109,10 @@ def build_report(signals: list[Signal], open_count: int = 0) -> dict:
             "question": s.question,
         })
 
-    total_pnl = sum(s.pnl for s in settled)
+    total_pnl = sum(s.pnl or 0.0 for s in settled)
     total_cost = sum(_cost_basis(s) for s in settled)
-    gross_win = sum(s.pnl for s in wins)
-    gross_loss = -sum(s.pnl for s in losses)  # positive magnitude of losing P&L
+    gross_win = sum(s.pnl or 0.0 for s in wins)
+    gross_loss = -sum(s.pnl or 0.0 for s in losses)  # positive magnitude of losing P&L
 
     return {
         "settled": n,

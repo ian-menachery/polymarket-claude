@@ -19,6 +19,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from research import analyzer, calibration, db, exchanges, polymarket
 from research.models import Analysis, Market, ScanRequest, ScanResult, Signal
@@ -28,7 +29,9 @@ _log = logging.getLogger(__name__)
 REFUTE_BAND = float(os.getenv("REFUTE_BAND", "0.03"))  # refuter must still diverge from the market by this much to "hold"
 
 
-def _refute_verdict(side: str, market_prob: float | None, cal_refuter: float | None) -> str | None:
+def _refute_verdict(
+    side: str | None, market_prob: float | None, cal_refuter: float | None
+) -> Literal["holds", "refuted"] | None:
     """holds if the (recalibrated) refuter still backs the original side past REFUTE_BAND."""
     if market_prob is None or cal_refuter is None or side is None:
         return None
@@ -57,15 +60,16 @@ def _ev_fields(
     that's surfaced, not dropped.
     """
     mp = market.market_prob
+    assert mp is not None  # caller (scan) gates this; a mid price is required to price EV
     dtc = _days_to_close(market)
     side = "YES" if prob > mp else "NO"
     executable = yes_cost is not None and no_cost is not None
 
     if side == "YES":
-        price_paid = yes_cost if executable else mp
+        price_paid = yes_cost if (executable and yes_cost is not None) else mp
         ev = prob - price_paid
     else:
-        price_paid = no_cost if executable else (1.0 - mp)
+        price_paid = no_cost if (executable and no_cost is not None) else (1.0 - mp)
         ev = (1.0 - prob) - price_paid
 
     valid = price_paid is not None and 0.0 < price_paid < 1.0
@@ -160,16 +164,23 @@ def _pack_result(
     )
 
 
-def _refute_top(results: list[ScanResult], req: ScanRequest, recals: dict, delay: float) -> None:
+def _refute_top(
+    results: list[ScanResult],
+    req: ScanRequest,
+    recals: dict[str, calibration.Recalibrator],
+    delay: float,
+) -> None:
     """Adversarial second pass over the top-ranked edges (most worth scrutinizing).
 
     Mutates each result's ``refutation`` in place — flag-only; edges are never dropped.
     """
     for r in results[: req.refute_top]:
+        if r.calibrated_prob is None:  # packed results always carry one; defensive
+            continue
         ref = analyzer.refute_edge(r.market, r.calibrated_prob, original_model=r.analysis.model)
         time.sleep(delay)
         if ref.error is None and ref.refuter_prob is not None:
-            recal = recals.get(r.analysis.model) or calibration.identity_recalibrator(r.analysis.model)
+            recal = recals.get(r.analysis.model or "") or calibration.identity_recalibrator(r.analysis.model)
             ref.verdict = _refute_verdict(r.side, r.market.market_prob, recal.apply(ref.refuter_prob))
         r.refutation = ref
 
@@ -191,7 +202,7 @@ def scan(req: ScanRequest) -> list[ScanResult]:
         if analysis is None or analysis.claude_prob is None:
             continue
 
-        recal = recals.get(analysis.model) or calibration.identity_recalibrator(analysis.model)
+        recal = recals.get(analysis.model or "") or calibration.identity_recalibrator(analysis.model)
         calibrated_p = recal.apply(analysis.claude_prob)
 
         mp = m.market_prob
@@ -235,6 +246,7 @@ def sweep_resolutions() -> int:
             # recorded VWAP fill: a winning side pays (1 - price_paid) per share, a
             # losing side forfeits price_paid per share. (Formula lives here, not db.)
             for sig in db.get_open_signals_for_market(market_id):
+                assert sig.id is not None  # persisted rows always carry an id
                 won = (sig.side == "YES") == outcome
                 pnl = sig.fill_shares * (1.0 - sig.price_paid) if won else -sig.fill_shares * sig.price_paid
                 db.resolve_signal(sig.id, outcome, pnl)
@@ -279,6 +291,13 @@ def persist_signals(results: list[ScanResult]) -> int:
     for r in results:
         if not (r.executable and r.ev is not None and r.ev > min_ev):
             continue
+        # An executable result always carries these (set together in _pack_result); assert so
+        # the type checker (and a future refactor) sees the invariant the filter guarantees.
+        assert (
+            r.side is not None and r.calibrated_prob is not None and r.market.market_prob is not None
+            and r.price_paid is not None and r.fill_shares is not None
+            and r.target_position_usd is not None
+        )
         key = (r.market.id, r.side)
         if key in open_keys:
             continue

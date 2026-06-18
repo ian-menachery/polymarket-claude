@@ -1,0 +1,22 @@
+# Local dev guardrails — run the same ruff + mypy as CI before each commit, so issues are
+# caught before they're pushed (this repo pushes after every commit). Enable once with
+# `pre-commit install` (pre-commit is in requirements-dev). Hooks run in pre-commit-managed
+# isolated envs (no reliance on PATH); revs are pinned to the versions in requirements-dev.lock.
+# Full pytest stays in CI to keep commits fast.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.17
+    hooks:
+      - id: ruff  # this hook already runs `ruff check`; args are just the paths
+        args: [src, tests]
+        pass_filenames: false
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.1.0
+    hooks:
+      - id: mypy
+        args: [src]
+        pass_filenames: false
+        # pydantic ships its own types and is core to the models; other SDKs fall under
+        # ignore_missing_imports (see [tool.mypy] in pyproject).
+        additional_dependencies: [pydantic>=2]

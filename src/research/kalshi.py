@@ -63,7 +63,7 @@ def _sign_headers(key_id: str, key_path: str, method: str, path: str) -> dict[st
     """
     try:
         from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding
+        from cryptography.hazmat.primitives.asymmetric import padding, rsa
     except ImportError as e:  # pragma: no cover - only hit when auth is opted into without the dep
         raise RuntimeError(
             "Kalshi auth (KALSHI_API_KEY/KALSHI_KEY_FILE) requires the 'cryptography' "
@@ -75,6 +75,8 @@ def _sign_headers(key_id: str, key_path: str, method: str, path: str) -> dict[st
     message = (timestamp_ms + method.upper() + path).encode("utf-8")
     with open(key_path, "rb") as f:
         private_key = serialization.load_pem_private_key(f.read(), password=None)
+    # Kalshi's scheme uses an RSA key with PSS padding; narrow the broad loader return type.
+    assert isinstance(private_key, rsa.RSAPrivateKey), "Kalshi signing key must be RSA"
     signature = private_key.sign(
         message,
         padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
@@ -101,7 +103,7 @@ class KalshiClient:
         request_delay_s: float = 0.2,
         timeout_s: float = 30.0,
     ) -> None:
-        host = api_host or os.getenv("KALSHI_API_BASE", DEFAULT_API_HOST)
+        host = api_host or os.getenv("KALSHI_API_BASE") or DEFAULT_API_HOST
         self._client = httpx.Client(base_url=host + API_PREFIX, timeout=timeout_s)
         self._request_delay_s = request_delay_s
         self._key_id = os.getenv("KALSHI_API_KEY") or None
@@ -231,7 +233,7 @@ def normalize_market(raw: dict) -> Market | None:
     )
 
 
-def _orderbook_side(levels: object, *, invert: bool) -> list[tuple[float, float]]:
+def _orderbook_side(levels: Any, *, invert: bool) -> list[tuple[float, float]]:
     """Parse one Kalshi ``[[price_cents, count], ...]`` side into ``(price, size)`` pairs.
 
     Kalshi prices are integer **cents** (1–99); we scale to 0–1 dollars. ``invert=True``

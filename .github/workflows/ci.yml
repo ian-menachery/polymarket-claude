@@ -25,6 +25,9 @@ jobs:
       - name: Lint (ruff)
         run: ruff check src tests
 
+      - name: Type-check (mypy)
+        run: mypy src
+
       - name: Test (pytest + coverage)
         run: pytest -q --cov=research --cov-report=term-missing --cov-fail-under=55
 
