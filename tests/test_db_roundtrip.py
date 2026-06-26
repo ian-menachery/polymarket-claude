@@ -42,6 +42,20 @@ def test_analysis_roundtrip_and_resolution(temp_db) -> None:
     assert settled.resolution is True
 
 
+def test_analysis_token_usage_roundtrip(temp_db) -> None:
+    db = temp_db
+    m = make_market(market_prob=0.5)
+    db.upsert_markets([m])
+    db.save_analysis(Analysis(
+        market_id=m.id, model="test-model", claude_prob=0.6,
+        input_tokens=1234, output_tokens=567,
+    ))
+    latest = db.get_latest_analysis(m.id)
+    assert latest is not None
+    assert latest.input_tokens == 1234
+    assert latest.output_tokens == 567
+
+
 def test_analysis_history_newest_first(temp_db) -> None:
     db = temp_db
     m = make_market()

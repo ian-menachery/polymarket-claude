@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from typing import Any, get_args
 
 import anthropic
@@ -251,6 +252,27 @@ def _parse_analysis(text: str, market: Market, model: str) -> Analysis:
     )
 
 
+@dataclass(frozen=True)
+class Completion:
+    """One LLM completion: the text plus the token usage that produced it (for cost accounting)."""
+
+    text: str
+    input_tokens: int
+    output_tokens: int
+
+
+def _usage_tokens(response: Any) -> tuple[int, int]:
+    """(input_tokens, output_tokens) from a provider response; (0, 0) if usage is absent.
+
+    Both the Anthropic ``Message.usage`` and the OpenAI Responses ``response.usage`` expose
+    ``input_tokens``/``output_tokens``; read defensively so a missing field never breaks a scan.
+    """
+    u = getattr(response, "usage", None)
+    if u is None:
+        return 0, 0
+    return int(getattr(u, "input_tokens", 0) or 0), int(getattr(u, "output_tokens", 0) or 0)
+
+
 def _last_text(response: Any) -> str:
     """The final text block (web_search emits tool blocks before it)."""
     texts = [b.text for b in response.content if b.type == "text"]
@@ -259,7 +281,7 @@ def _last_text(response: Any) -> str:
     return texts[-1]
 
 
-def _anthropic_complete(system: str, user: str) -> str:
+def _anthropic_complete(system: str, user: str) -> Completion:
     """Anthropic messages.create with web search, 429 backoff, and pause_turn resume."""
     model = os.getenv("ANALYSIS_MODEL", ANTHROPIC_DEFAULT_MODEL)
 
@@ -282,6 +304,7 @@ def _anthropic_complete(system: str, user: str) -> str:
 
     messages: list[dict] = [{"role": "user", "content": user}]
     response = create(messages)
+    in_tok, out_tok = _usage_tokens(response)  # sum usage across pause_turn continuations
     continuations = 0
     while response.stop_reason == "pause_turn" and continuations < _MAX_PAUSE_CONTINUATIONS:
         messages = [
@@ -289,12 +312,15 @@ def _anthropic_complete(system: str, user: str) -> str:
             {"role": "assistant", "content": response.content},
         ]
         response = create(messages)
+        ci, co = _usage_tokens(response)
+        in_tok += ci
+        out_tok += co
         continuations += 1
-    return _last_text(response)
+    return Completion(_last_text(response), in_tok, out_tok)
 
 
-def _openai_complete(system: str, user: str) -> str:
-    """OpenAI Responses API with the web_search tool; returns output_text.
+def _openai_complete(system: str, user: str) -> Completion:
+    """OpenAI Responses API with the web_search tool; returns text + token usage.
 
     Retries transient rate-limit/timeout/connection errors with the same backoff as the
     Anthropic path. A persistent rate limit (incl. insufficient_quota) is re-raised on the
@@ -302,14 +328,16 @@ def _openai_complete(system: str, user: str) -> str:
     """
     for attempt in range(_MAX_RETRIES):
         try:
-            return _get_openai_client().responses.create(
+            response = _get_openai_client().responses.create(
                 model=os.getenv("OPENAI_MODEL", OPENAI_DEFAULT_MODEL),
                 tools=[{"type": "web_search"}],  # type: ignore[typeddict-item]  # valid web_search tool at runtime
                 instructions=system,
                 input=user,
                 max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
                 timeout=120.0,
-            ).output_text
+            )
+            in_tok, out_tok = _usage_tokens(response)
+            return Completion(response.output_text, in_tok, out_tok)
         except (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError) as e:
             # Quota exhaustion is permanent — don't burn retries (the caller latches it).
             if attempt == _MAX_RETRIES - 1 or _is_quota_error(e):
@@ -318,9 +346,9 @@ def _openai_complete(system: str, user: str) -> str:
     raise RuntimeError("unreachable")  # pragma: no cover
 
 
-def _complete(system: str, user: str, provider: str | None = None) -> str:
-    """One LLM completion with web search. ``provider`` defaults to the configured one;
-    pass it explicitly to target a specific provider (used by cross-model refutation).
+def _complete(system: str, user: str, provider: str | None = None) -> Completion:
+    """One LLM completion with web search (text + token usage). ``provider`` defaults to the
+    configured one; pass it explicitly to target a specific provider (cross-model refutation).
     May raise. The sub-functions pick their own model from env per provider."""
     if provider is None:
         provider = current_provider()
@@ -347,8 +375,11 @@ def analyze_market(market: Market) -> Analysis:
     """Analyze one market with the configured provider + web search. Never raises."""
     model = current_model()
     try:
-        text = _complete(SYSTEM_PROMPT, _user_prompt(market))
-        return _parse_analysis(text, market, model)
+        comp = _complete(SYSTEM_PROMPT, _user_prompt(market))
+        analysis = _parse_analysis(comp.text, market, model)
+        analysis.input_tokens = comp.input_tokens
+        analysis.output_tokens = comp.output_tokens
+        return analysis
     except Exception as e:  # noqa: BLE001 — scanner needs graceful degradation
         return Analysis(market_id=market.id, model=model, error=_provider_error(e))
 
@@ -411,9 +442,8 @@ def refute_edge(market: Market, claimed_prob: float, original_model: str | None 
     """
     provider, model = _refuter_target(original_model)
     try:
-        result = _extract_json(
-            _complete(REFUTE_SYSTEM_PROMPT, _refute_prompt(market, claimed_prob), provider=provider)
-        )
+        comp = _complete(REFUTE_SYSTEM_PROMPT, _refute_prompt(market, claimed_prob), provider=provider)
+        result = _extract_json(comp.text)
         cps = [str(c) for c in (result.get("counterpoints") or [])][:4]
         return Refutation(
             refuter_prob=_normalize_prob(result),
@@ -421,6 +451,8 @@ def refute_edge(market: Market, claimed_prob: float, original_model: str | None 
             counterpoints=cps,
             summary=str(result.get("summary") or ""),
             refuter_model=model,
+            input_tokens=comp.input_tokens,
+            output_tokens=comp.output_tokens,
         )
     except Exception as e:  # noqa: BLE001 — a failed refutation shouldn't kill the scan
         return Refutation(error=_provider_error(e), refuter_model=model)

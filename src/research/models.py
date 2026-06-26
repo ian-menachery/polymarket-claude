@@ -75,6 +75,8 @@ class Analysis(BaseModel):
     resolved: bool | None = None
     resolution: bool | None = None  # True=YES won, False=NO won
     error: str | None = None
+    input_tokens: int | None = None  # LLM tokens consumed producing this analysis (cost accounting)
+    output_tokens: int | None = None
 
 
 class MarketWithAnalysis(BaseModel):
@@ -100,6 +102,8 @@ class Refutation(BaseModel):
     counterpoints: list[str] = Field(default_factory=list)
     summary: str = ""
     error: str | None = None
+    input_tokens: int | None = None  # LLM tokens consumed by this refutation (cost accounting)
+    output_tokens: int | None = None
 
 
 class ScanResult(BaseModel):
