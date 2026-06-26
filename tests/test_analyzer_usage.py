@@ -19,6 +19,13 @@ class _Block:
         self.text = text
 
 
+class _NonTextBlock:
+    """A non-text content block (server_tool_use / web_search_tool_result) — must be skipped."""
+
+    def __init__(self, block_type: str) -> None:
+        self.type = block_type
+
+
 class _AnthResp:
     def __init__(self, text: str, i: int, o: int, stop: str = "end_turn") -> None:
         self.content = [_Block(text)]
@@ -86,3 +93,23 @@ def test_refute_edge_stamps_tokens(monkeypatch) -> None:
     ref = analyzer.refute_edge(make_market(market_prob=0.5), claimed_prob=0.7)
     assert ref.error is None
     assert (ref.input_tokens, ref.output_tokens) == (9, 3)
+
+
+def test_web_search_shaped_response_parses(monkeypatch) -> None:
+    """End-to-end: a realistic Anthropic web-search response (search-activity blocks, then a final
+    text block carrying citations + the JSON) must parse to a probability via the existing path."""
+    text_block = _Block(_JSON)
+    text_block.citations = [{"type": "web_search_result_location", "url": "https://example.com"}]
+    resp = _AnthResp(_JSON, 100, 40)
+    resp.content = [
+        _NonTextBlock("server_tool_use"),       # the web_search invocation
+        _NonTextBlock("web_search_tool_result"),  # the returned results (skipped by _last_text)
+        text_block,                              # the final answer
+    ]
+    monkeypatch.setattr(analyzer, "current_provider", lambda: "anthropic")
+    monkeypatch.setattr(analyzer, "_get_client", lambda: _FakeAnthClient([resp]))
+
+    a = analyzer.analyze_market(make_market(market_prob=0.4))
+    assert a.error is None
+    assert a.claude_prob == 0.6  # extracted from the JSON in the final text block
+    assert a.model  # records which model produced it (per-model calibration)

@@ -21,14 +21,17 @@ The analysis engine (`analyzer.py`) supports **both OpenAI and Anthropic**, sele
 runtime by the `LLM_PROVIDER` env var (`openai` or `anthropic`). Each `Analysis` records the
 `model` that produced it, so calibration stays per-model across a provider switch.
 
-- **Currently primary: OpenAI** — `.env` sets `LLM_PROVIDER=openai` and `OPENAI_MODEL=gpt-5.5`.
-- Switch providers by changing `LLM_PROVIDER` in `.env` (then restart). No code change needed.
-- Per-provider model overrides: `OPENAI_MODEL` (default `gpt-5.5`) and `ANALYSIS_MODEL`
-  (Anthropic, default `claude-sonnet-4-6`). Note: the code's built-in `LLM_PROVIDER` default is
-  `anthropic`; the `.env` value overrides it, which is why OpenAI is what actually runs.
+- **Currently primary: Anthropic** — `.env` sets `LLM_PROVIDER=anthropic` and
+  `ANALYSIS_MODEL=claude-sonnet-4-6` (also the code default). The Anthropic path uses the
+  server-side `web_search` tool (confirm web_search is enabled for the org in the Claude Console).
+- **OpenAI is the reversible fallback** — set `LLM_PROVIDER=openai` (+ `OPENAI_MODEL`, default
+  `gpt-5.5`) and restart to switch back. No code change needed; the path is kept intact.
+- Switch providers by changing `LLM_PROVIDER` in `.env` (then restart).
+- Each `Analysis` records its `model`, so calibration stays **per-model** across a switch — a
+  provider change starts a fresh per-model calibration history (uncalibrated until `CALIBRATION_MIN_N`
+  resolved pairs); don't size real positions on a new model until its outcomes confirm calibration.
 - No silent fallback: if OpenAI credits are exhausted (`insufficient_quota`), the engine latches
-  `openai_exhausted` and returns an explicit error telling you to set `LLM_PROVIDER=anthropic` —
-  it does not quietly switch to Claude.
+  `openai_exhausted` and returns an explicit error — it does not quietly switch providers.
 
 ## Quick start
 ```bash

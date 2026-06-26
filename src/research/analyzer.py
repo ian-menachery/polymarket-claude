@@ -274,10 +274,13 @@ def _usage_tokens(response: Any) -> tuple[int, int]:
 
 
 def _last_text(response: Any) -> str:
-    """The final text block (web_search emits tool blocks before it)."""
+    """The final answer text block — web_search emits server_tool_use / web_search_tool_result
+    blocks (and the final text may carry citations) before it; we want the last ``text`` block."""
     texts = [b.text for b in response.content if b.type == "text"]
     if not texts:
-        raise ValueError("No text block in Claude response")
+        # Web search ran but the turn ended without a final text answer (e.g. exhausted pause
+        # continuations). Caught by analyze_market -> error Analysis (graceful, not a crash).
+        raise ValueError("No final text block in Claude response (web search returned no answer)")
     return texts[-1]
 
 
