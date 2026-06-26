@@ -431,13 +431,15 @@ function ScanHistoryBlock({ hist }) {
         <span className="kv">avg edges/run <b>{hist.avg_edges_per_run}</b></span>
         <span className="kv">avg markets scanned <b>{hist.avg_markets_scanned}</b></span>
         <span className="kv">resolutions captured <b>{hist.total_resolutions_captured}</b></span>
+        <span className="kv">LLM calls <b>{hist.total_llm_calls ?? 0}</b></span>
+        <span className="kv">total cost <b>${(hist.total_cost_usd ?? 0).toFixed(2)}</b></span>
       </div>
       {hist.total_runs === 0 ? (
         <div className="cal-note">No auto-scan runs yet — set <code>SCAN_INTERVAL_HOURS</code> to enable.</div>
       ) : (
         <div className="table-wrap">
           <table className="scan">
-            <thead><tr><th>Time</th><th>Scanned</th><th>Edges</th><th>Resolutions</th><th>Errors</th></tr></thead>
+            <thead><tr><th>Time</th><th>Scanned</th><th>Edges</th><th>Resolutions</th><th>LLM calls</th><th>Cost</th><th>Errors</th></tr></thead>
             <tbody>
               {hist.last_runs.map((r, i) => (
                 <tr key={i}>
@@ -445,6 +447,8 @@ function ScanHistoryBlock({ hist }) {
                   <td>{r.markets_scanned ?? 0}</td>
                   <td>{r.edges_found ?? 0}</td>
                   <td>{r.resolutions_captured ?? 0}</td>
+                  <td>{r.llm_calls ?? 0}</td>
+                  <td>{r.cost_usd != null ? "$" + r.cost_usd.toFixed(2) : "—"}</td>
                   <td>{r.errors && r.errors.length ? `⚠ ${r.errors.length}` : "—"}</td>
                 </tr>
               ))}

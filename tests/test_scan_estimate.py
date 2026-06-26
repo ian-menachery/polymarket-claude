@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import make_market
 
 from research import scanner
@@ -57,9 +58,13 @@ def test_estimate_applies_cap_and_refute_bound(temp_db, monkeypatch) -> None:
     assert est["estimated_calls"] == 4
 
 
-def test_estimate_cost_uses_env_per_call(temp_db, monkeypatch) -> None:
+def test_estimate_cost_is_model_priced(temp_db, monkeypatch) -> None:
     _setup(monkeypatch, n_markets=2)
-    monkeypatch.setenv("COST_PER_LLM_CALL_USD", "0.50")
+    # Price with a known model + token assumptions instead of the real .env model.
+    monkeypatch.setattr(scanner.analyzer, "current_model", lambda: "claude-sonnet-4-6")
+    monkeypatch.setenv("EST_INPUT_TOKENS", "1000000")  # 1M input @ $3/1M = $3.00/call
+    monkeypatch.setenv("EST_OUTPUT_TOKENS", "0")
     est = scanner.estimate_scan(ScanRequest(max_markets=2))
-    assert est["cost_per_call_usd"] == 0.50
-    assert est["estimated_cost_usd"] == 1.0  # 2 calls * $0.50
+    assert est["model"] == "claude-sonnet-4-6"
+    assert est["cost_per_call_usd"] == pytest.approx(3.0)
+    assert est["estimated_cost_usd"] == pytest.approx(6.0)  # 2 calls

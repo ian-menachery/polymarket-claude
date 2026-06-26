@@ -57,9 +57,13 @@ def run_once() -> dict:
         edges_found = 0
         signals_logged = 0
         alerts_emitted = 0
+        llm_calls = 0
+        cost_usd = 0.0
         try:
-            results = scanner.scan(_build_request())
+            results, stats = scanner.scan_with_stats(_build_request())
             edges_found = len(results)
+            llm_calls = int(stats.get("llm_calls", 0))
+            cost_usd = float(stats.get("cost_usd", 0.0))
             signals_logged = scanner.persist_signals(results)
             alerts_emitted = scanner.emit_alerts(results)
         except Exception as e:  # noqa: BLE001
@@ -79,6 +83,8 @@ def run_once() -> dict:
         "signals_logged": signals_logged,
         "alerts_emitted": alerts_emitted,
         "resolutions_captured": resolutions_captured,
+        "llm_calls": llm_calls,
+        "cost_usd": round(cost_usd, 4),
         "errors": errors,
     }
     try:
@@ -153,6 +159,8 @@ def history(last_n: int = 10) -> dict:
             "avg_edges_per_run": 0.0,
             "avg_markets_scanned": 0.0,
             "total_resolutions_captured": 0,
+            "total_llm_calls": 0,
+            "total_cost_usd": 0.0,
             "last_runs": [],
         }
     edges = sum(r.get("edges_found", 0) for r in records)
@@ -162,6 +170,8 @@ def history(last_n: int = 10) -> dict:
         "avg_edges_per_run": round(edges / n, 2),
         "avg_markets_scanned": round(scanned / n, 2),
         "total_resolutions_captured": sum(r.get("resolutions_captured", 0) for r in records),
+        "total_llm_calls": sum(r.get("llm_calls", 0) for r in records),  # legacy rows lack it → 0
+        "total_cost_usd": round(sum(r.get("cost_usd", 0.0) for r in records), 4),
         "last_runs": records[-last_n:][::-1],  # newest first
     }
 

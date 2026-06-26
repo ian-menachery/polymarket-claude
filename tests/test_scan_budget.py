@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from conftest import make_market
 
 from research import scanner
@@ -41,6 +42,22 @@ def test_zero_means_uncapped(temp_db, monkeypatch) -> None:
     calls = _setup(monkeypatch, n_markets=5)
     scanner.scan(ScanRequest(max_markets=5, max_llm_calls=0))
     assert calls["n"] == 5, "0 = no cap: every candidate is analyzed"
+
+
+def test_scan_with_stats_accumulates_real_cost(temp_db, monkeypatch) -> None:
+    monkeypatch.setenv("ANALYSIS_DELAY_SECONDS", "0")
+    markets = [make_market(id=f"m{i}", market_prob=0.5) for i in range(3)]
+    monkeypatch.setattr(scanner.exchanges, "fetch_active", lambda max_markets: markets)
+    monkeypatch.setattr(scanner.exchanges, "fetch_book", lambda m: None)
+    monkeypatch.setattr(scanner.analyzer, "analyze_market", lambda m: Analysis(
+        market_id=m.id, claude_prob=0.9, model="claude-sonnet-4-6",
+        market_prob_at_analysis=0.5, input_tokens=1_000_000, output_tokens=0,
+    ))
+    _results, stats = scanner.scan_with_stats(ScanRequest(max_markets=3))
+    assert stats["fresh_analyses"] == 3
+    assert stats["llm_calls"] == 3
+    # 3 analyses * 1M input @ $3/1M (claude-sonnet-4-6) = $9.00; cached/reused would be free.
+    assert stats["cost_usd"] == pytest.approx(9.0)
 
 
 def test_cached_analyses_do_not_consume_budget(temp_db, monkeypatch) -> None:

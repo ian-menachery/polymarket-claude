@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from research import analyzer, calibration, db, exchanges, polymarket
+from research import analyzer, calibration, db, exchanges, polymarket, pricing
 from research.models import Analysis, Market, ScanRequest, ScanResult, Signal
 
 _log = logging.getLogger(__name__)
@@ -204,8 +204,12 @@ def _refute_top(
     return made
 
 
-def scan(req: ScanRequest) -> list[ScanResult]:
-    """Run a batch EV scan and return results sorted by annualized EV (desc)."""
+def _run_scan(req: ScanRequest) -> tuple[list[ScanResult], dict]:
+    """Core scan; returns (results, stats). ``stats`` carries this run's real LLM cost.
+
+    ``cost_usd`` sums ``pricing.cost_usd`` over only the *freshly-made* analyses + refutations
+    (reused/cached analyses are free and not re-counted). Failed calls contribute 0 (no usage).
+    """
     recals = calibration.build_recalibrators()  # one per model; fit once, applied per market
     markets = exchanges.fetch_active(req.max_markets)
     db.upsert_markets(markets)  # persist fetched markets (also satisfies the analyses FK)
@@ -215,13 +219,17 @@ def scan(req: ScanRequest) -> list[ScanResult]:
     delay = float(os.getenv("ANALYSIS_DELAY_SECONDS", "1.5"))
     target = float(os.getenv("TARGET_POSITION_USD", "50"))  # VWAP fill sizes EV to this
     budget = req.max_llm_calls  # cap on fresh LLM calls this scan (0 = unlimited); see ScanRequest
-    calls_made = 0
+    fresh = 0
+    cost = 0.0
     results: list[ScanResult] = []
 
     for m in candidates:
-        allow_fresh = budget == 0 or calls_made < budget
+        allow_fresh = budget == 0 or fresh < budget
         analysis, made_call = _analyze_or_reuse(m, req.max_age_hours, delay, allow_fresh)
-        calls_made += int(made_call)
+        if made_call:
+            fresh += 1
+            if analysis is not None:
+                cost += pricing.cost_usd(analysis.model, analysis.input_tokens, analysis.output_tokens)
         if analysis is None or analysis.claude_prob is None:
             continue
 
@@ -241,13 +249,36 @@ def scan(req: ScanRequest) -> list[ScanResult]:
             results.append(result)
 
     results.sort(key=lambda r: r.annualized_ev or -1.0, reverse=True)
-    calls_made += _refute_top(results, req, recals, delay, budget, calls_made)
-    if budget and calls_made >= budget:
+    refutations = _refute_top(results, req, recals, delay, budget, fresh)
+    cost += sum(
+        pricing.cost_usd(r.refutation.refuter_model, r.refutation.input_tokens, r.refutation.output_tokens)
+        for r in results[: req.refute_top]
+        if r.refutation is not None and r.refutation.error is None
+    )
+    total_calls = fresh + refutations
+    if budget and total_calls >= budget:
         _log.info(
             "scan reached the LLM-call cap (max_llm_calls=%d); remaining markets/refutations were "
             "skipped to bound spend", budget,
         )
-    return results
+    stats = {
+        "llm_calls": total_calls,
+        "fresh_analyses": fresh,
+        "refutations": refutations,
+        "cost_usd": round(cost, 4),
+    }
+    return results, stats
+
+
+def scan(req: ScanRequest) -> list[ScanResult]:
+    """Run a batch EV scan and return results sorted by annualized EV (desc)."""
+    return _run_scan(req)[0]
+
+
+def scan_with_stats(req: ScanRequest) -> tuple[list[ScanResult], dict]:
+    """Like ``scan()`` but also returns run stats — ``{llm_calls, fresh_analyses, refutations,
+    cost_usd}`` — for cost logging (used by the scheduler). ``cost_usd`` is from real token usage."""
+    return _run_scan(req)
 
 
 def estimate_scan(req: ScanRequest) -> dict:
@@ -255,9 +286,10 @@ def estimate_scan(req: ScanRequest) -> dict:
 
     Fetches market data (free) and reads the analysis cache to count how many candidates would
     need a *fresh* analysis (cache misses) vs. be reused, then applies the same per-scan cap as
-    ``scan()``. The call count is exact; ``estimated_cost_usd`` is a rough ``calls × cost-per-call``
-    using ``COST_PER_LLM_CALL_USD`` (flat — real cost varies by model + web search; token-level
-    costing is a later step). ``refute_max`` is an upper bound (actual refutations are ``<=`` it).
+    ``scan()``. The call count is exact; ``estimated_cost_usd`` prices it with the **current model's**
+    per-token rate (``pricing.py``) × assumed tokens/call (``EST_INPUT_TOKENS``/``EST_OUTPUT_TOKENS``)
+    — still an estimate (real usage varies; the post-scan run log carries the true cost).
+    ``refute_max`` is an upper bound (actual refutations are ``<=`` it).
     """
     markets = exchanges.fetch_active(req.max_markets)  # market data only — no cost, no DB writes
     kalshi_min_volume = float(os.getenv("KALSHI_MIN_VOLUME", "5000"))
@@ -275,7 +307,10 @@ def estimate_scan(req: ScanRequest) -> dict:
     if req.max_llm_calls:  # 0 = uncapped
         est_calls = min(est_calls, req.max_llm_calls)
 
-    cost_per_call = float(os.getenv("COST_PER_LLM_CALL_USD", "0.03"))
+    model = analyzer.current_model()
+    est_in = int(os.getenv("EST_INPUT_TOKENS", "1500"))
+    est_out = int(os.getenv("EST_OUTPUT_TOKENS", "700"))
+    cost_per_call = pricing.cost_usd(model, est_in, est_out)
     return {
         "candidates": len(candidates),
         "cached": cached,
@@ -283,7 +318,8 @@ def estimate_scan(req: ScanRequest) -> dict:
         "refute_max": refute_max,
         "max_llm_calls": req.max_llm_calls,
         "estimated_calls": est_calls,
-        "cost_per_call_usd": cost_per_call,
+        "model": model,
+        "cost_per_call_usd": round(cost_per_call, 4),
         "estimated_cost_usd": round(est_calls * cost_per_call, 2),
     }
 
