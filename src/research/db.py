@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS analyses (
     error          TEXT    DEFAULT NULL,
     input_tokens   INTEGER DEFAULT NULL,   -- LLM tokens consumed (cost accounting)
     output_tokens  INTEGER DEFAULT NULL,
+    cache_creation_input_tokens INTEGER DEFAULT NULL,  -- Anthropic prompt-cache write tokens
+    cache_read_input_tokens     INTEGER DEFAULT NULL,  -- Anthropic prompt-cache read tokens
     FOREIGN KEY (market_id) REFERENCES markets(id)
 );
 
@@ -105,7 +107,7 @@ _MARKET_COLUMNS = (
 _ANALYSIS_COLUMNS = (
     "market_id, created_at, model, claude_prob, market_prob_at_analysis, "
     "confidence, edge, edge_magnitude, factors, summary, resolved, resolution, error, "
-    "input_tokens, output_tokens"
+    "input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens"
 )
 _SIGNAL_COLUMNS = (
     "market_id, exchange, question, created_at, model, side, calibrated_prob, market_prob, "
@@ -191,6 +193,8 @@ def _analysis_to_row(a: Analysis) -> tuple:
         a.error,
         a.input_tokens,
         a.output_tokens,
+        a.cache_creation_input_tokens,
+        a.cache_read_input_tokens,
     )
 
 
@@ -248,6 +252,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE analyses ADD COLUMN input_tokens INTEGER")
         if "output_tokens" not in cols:
             conn.execute("ALTER TABLE analyses ADD COLUMN output_tokens INTEGER")
+        if "cache_creation_input_tokens" not in cols:  # prompt-cache instrumentation (added later)
+            conn.execute("ALTER TABLE analyses ADD COLUMN cache_creation_input_tokens INTEGER")
+        if "cache_read_input_tokens" not in cols:
+            conn.execute("ALTER TABLE analyses ADD COLUMN cache_read_input_tokens INTEGER")
         # Dual-exchange: tag pre-existing markets/signals as 'polymarket' (the only
         # source before Kalshi support). New rows set it explicitly via the models.
         market_cols = {row[1] for row in conn.execute("PRAGMA table_info(markets)").fetchall()}
@@ -285,7 +293,7 @@ def get_market(market_id: str) -> Market | None:
 
 def save_analysis(analysis: Analysis) -> int:
     """Append an analysis (always INSERT, never UPDATE). Returns the new row id."""
-    placeholders = ", ".join(["?"] * 15)
+    placeholders = ", ".join(["?"] * 17)
     with _conn() as conn:
         cur = conn.execute(
             f"INSERT INTO analyses ({_ANALYSIS_COLUMNS}) VALUES ({placeholders})",

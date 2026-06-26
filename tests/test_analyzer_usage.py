@@ -8,9 +8,11 @@ from research import analyzer
 
 
 class _Usage:
-    def __init__(self, i: int, o: int) -> None:
+    def __init__(self, i: int, o: int, cc: int = 0, cr: int = 0) -> None:
         self.input_tokens = i
         self.output_tokens = o
+        self.cache_creation_input_tokens = cc
+        self.cache_read_input_tokens = cr
 
 
 class _Block:
@@ -77,7 +79,16 @@ def test_openai_usage_captured(monkeypatch) -> None:
 
 
 def test_usage_tokens_missing_is_zero() -> None:
-    assert analyzer._usage_tokens(object()) == (0, 0)
+    assert analyzer._usage_tokens(object()) == (0, 0, 0, 0)
+
+
+def test_anthropic_captures_cache_tokens(monkeypatch) -> None:
+    resp = _AnthResp(_JSON, 50, 20)
+    resp.usage = _Usage(50, 20, cc=200, cr=1800)  # a cache write + read on this call
+    monkeypatch.setattr(analyzer, "_get_client", lambda: _FakeAnthClient([resp]))
+    comp = analyzer._anthropic_complete("sys", "user")
+    assert comp.cache_creation_input_tokens == 200
+    assert comp.cache_read_input_tokens == 1800
 
 
 def test_analyze_market_stamps_tokens(monkeypatch) -> None:

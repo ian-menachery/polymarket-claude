@@ -221,6 +221,8 @@ def _run_scan(req: ScanRequest) -> tuple[list[ScanResult], dict]:
     budget = req.max_llm_calls  # cap on fresh LLM calls this scan (0 = unlimited); see ScanRequest
     fresh = 0
     cost = 0.0
+    cache_creation = 0  # Anthropic prompt-cache tokens this scan (instrumentation; ~0 today)
+    cache_read = 0
     results: list[ScanResult] = []
 
     for m in candidates:
@@ -229,7 +231,12 @@ def _run_scan(req: ScanRequest) -> tuple[list[ScanResult], dict]:
         if made_call:
             fresh += 1
             if analysis is not None:
-                cost += pricing.cost_usd(analysis.model, analysis.input_tokens, analysis.output_tokens)
+                cost += pricing.cost_usd(
+                    analysis.model, analysis.input_tokens, analysis.output_tokens,
+                    analysis.cache_creation_input_tokens, analysis.cache_read_input_tokens,
+                )
+                cache_creation += analysis.cache_creation_input_tokens or 0
+                cache_read += analysis.cache_read_input_tokens or 0
         if analysis is None or analysis.claude_prob is None:
             continue
 
@@ -250,11 +257,15 @@ def _run_scan(req: ScanRequest) -> tuple[list[ScanResult], dict]:
 
     results.sort(key=lambda r: r.annualized_ev or -1.0, reverse=True)
     refutations = _refute_top(results, req, recals, delay, budget, fresh)
-    cost += sum(
-        pricing.cost_usd(r.refutation.refuter_model, r.refutation.input_tokens, r.refutation.output_tokens)
-        for r in results[: req.refute_top]
-        if r.refutation is not None and r.refutation.error is None
-    )
+    for r in results[: req.refute_top]:
+        ref = r.refutation
+        if ref is not None and ref.error is None:
+            cost += pricing.cost_usd(
+                ref.refuter_model, ref.input_tokens, ref.output_tokens,
+                ref.cache_creation_input_tokens, ref.cache_read_input_tokens,
+            )
+            cache_creation += ref.cache_creation_input_tokens or 0
+            cache_read += ref.cache_read_input_tokens or 0
     total_calls = fresh + refutations
     if budget and total_calls >= budget:
         _log.info(
@@ -266,6 +277,8 @@ def _run_scan(req: ScanRequest) -> tuple[list[ScanResult], dict]:
         "fresh_analyses": fresh,
         "refutations": refutations,
         "cost_usd": round(cost, 4),
+        "cache_creation_tokens": cache_creation,
+        "cache_read_tokens": cache_read,
     }
     return results, stats
 

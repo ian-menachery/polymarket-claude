@@ -30,3 +30,13 @@ class TestCostUsd:
     def test_fallback_model_still_priced(self) -> None:
         ri, ro = pricing.FALLBACK_RATE
         assert pricing.cost_usd("mystery", 1_000_000, 1_000_000) == pytest.approx(ri + ro)
+
+    def test_cache_read_and_write_multipliers(self) -> None:
+        # claude-sonnet-4-6 = (3.00, 15.00)/1M. 1M uncached input = 3.00; 1M cache write @1.25x =
+        # 3.75; 1M cache read @0.1x = 0.30 -> 7.05 total (output 0).
+        cost = pricing.cost_usd("claude-sonnet-4-6", 1_000_000, 0, 1_000_000, 1_000_000)
+        assert cost == pytest.approx(3.00 + 3.75 + 0.30)
+
+    def test_cache_args_default_to_zero(self) -> None:
+        # Omitting the cache args must equal passing them as 0 (back-compat for 2-arg callers).
+        assert pricing.cost_usd("gpt-5.5", 1000, 500) == pricing.cost_usd("gpt-5.5", 1000, 500, 0, 0)

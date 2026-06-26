@@ -52,12 +52,15 @@ def test_scan_with_stats_accumulates_real_cost(temp_db, monkeypatch) -> None:
     monkeypatch.setattr(scanner.analyzer, "analyze_market", lambda m: Analysis(
         market_id=m.id, claude_prob=0.9, model="claude-sonnet-4-6",
         market_prob_at_analysis=0.5, input_tokens=1_000_000, output_tokens=0,
+        cache_read_input_tokens=1_000_000,  # 1M cache read @ 0.1x of $3/1M = $0.30 per call
     ))
     _results, stats = scanner.scan_with_stats(ScanRequest(max_markets=3))
     assert stats["fresh_analyses"] == 3
     assert stats["llm_calls"] == 3
-    # 3 analyses * 1M input @ $3/1M (claude-sonnet-4-6) = $9.00; cached/reused would be free.
-    assert stats["cost_usd"] == pytest.approx(9.0)
+    # per call: 1M input @$3 = $3.00 + 1M cache_read @0.3 = $0.30 -> $3.30; x3 = $9.90.
+    assert stats["cost_usd"] == pytest.approx(9.90)
+    assert stats["cache_read_tokens"] == 3_000_000  # aggregated across the 3 fresh calls
+    assert stats["cache_creation_tokens"] == 0
 
 
 def test_cached_analyses_do_not_consume_budget(temp_db, monkeypatch) -> None:

@@ -77,6 +77,8 @@ class Analysis(BaseModel):
     error: str | None = None
     input_tokens: int | None = None  # LLM tokens consumed producing this analysis (cost accounting)
     output_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None  # Anthropic prompt-cache write/read (0 if no cache)
+    cache_read_input_tokens: int | None = None
 
 
 class MarketWithAnalysis(BaseModel):
@@ -104,6 +106,8 @@ class Refutation(BaseModel):
     error: str | None = None
     input_tokens: int | None = None  # LLM tokens consumed by this refutation (cost accounting)
     output_tokens: int | None = None
+    cache_creation_input_tokens: int | None = None  # Anthropic prompt-cache write/read (0 if no cache)
+    cache_read_input_tokens: int | None = None
 
 
 class ScanResult(BaseModel):

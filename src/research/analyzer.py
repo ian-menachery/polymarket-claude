@@ -254,23 +254,36 @@ def _parse_analysis(text: str, market: Market, model: str) -> Analysis:
 
 @dataclass(frozen=True)
 class Completion:
-    """One LLM completion: the text plus the token usage that produced it (for cost accounting)."""
+    """One LLM completion: the text plus the token usage that produced it (for cost accounting).
+
+    ``cache_*`` fields track Anthropic prompt-cache usage; they're 0 on OpenAI (no caching there)
+    and on Anthropic calls where the cached prefix is below the model's minimum (so it never engages).
+    """
 
     text: str
     input_tokens: int
     output_tokens: int
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
-def _usage_tokens(response: Any) -> tuple[int, int]:
-    """(input_tokens, output_tokens) from a provider response; (0, 0) if usage is absent.
+def _usage_tokens(response: Any) -> tuple[int, int, int, int]:
+    """(input, output, cache_creation, cache_read) tokens from a response; zeros if usage is absent.
 
-    Both the Anthropic ``Message.usage`` and the OpenAI Responses ``response.usage`` expose
-    ``input_tokens``/``output_tokens``; read defensively so a missing field never breaks a scan.
+    Anthropic ``Message.usage`` exposes all four (``input_tokens`` is the **uncached** remainder;
+    ``cache_creation_input_tokens``/``cache_read_input_tokens`` cover prompt caching). OpenAI's usage
+    has only input/output, so the cache fields read as 0. Read defensively so a missing field never
+    breaks a scan.
     """
     u = getattr(response, "usage", None)
     if u is None:
-        return 0, 0
-    return int(getattr(u, "input_tokens", 0) or 0), int(getattr(u, "output_tokens", 0) or 0)
+        return 0, 0, 0, 0
+    return (
+        int(getattr(u, "input_tokens", 0) or 0),
+        int(getattr(u, "output_tokens", 0) or 0),
+        int(getattr(u, "cache_creation_input_tokens", 0) or 0),
+        int(getattr(u, "cache_read_input_tokens", 0) or 0),
+    )
 
 
 def _last_text(response: Any) -> str:
@@ -285,8 +298,15 @@ def _last_text(response: Any) -> str:
 
 
 def _anthropic_complete(system: str, user: str) -> Completion:
-    """Anthropic messages.create with web search, 429 backoff, and pause_turn resume."""
+    """Anthropic messages.create with web search, 429 backoff, and pause_turn resume.
+
+    The static ``system`` prompt is sent as a cached block (cache_control: ephemeral); with tools +
+    system rendering before messages, the breakpoint caches that whole prefix. NOTE: this only
+    engages if the prefix clears the model's minimum (~2048 tokens for Sonnet 4.6) — today's ~300-
+    token prefix is below that, so cache_* will read 0 (we log it rather than assume).
+    """
     model = os.getenv("ANALYSIS_MODEL", ANTHROPIC_DEFAULT_MODEL)
+    cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
     def create(messages: list[dict]) -> Any:
         for attempt in range(_MAX_RETRIES):
@@ -294,7 +314,7 @@ def _anthropic_complete(system: str, user: str) -> Completion:
                 return _get_client().messages.create(
                     model=model, max_tokens=MAX_TOKENS,
                     tools=[WEB_SEARCH_TOOL],  # type: ignore[list-item]  # SDK ToolParam stub stricter than the runtime accepts
-                    system=system,
+                    system=cached_system,  # type: ignore[arg-type]  # text block + cache_control is valid at runtime
                     messages=messages,  # type: ignore[arg-type]  # list[dict] is valid MessageParam at runtime
                     timeout=120.0,
                 )
@@ -307,7 +327,7 @@ def _anthropic_complete(system: str, user: str) -> Completion:
 
     messages: list[dict] = [{"role": "user", "content": user}]
     response = create(messages)
-    in_tok, out_tok = _usage_tokens(response)  # sum usage across pause_turn continuations
+    in_tok, out_tok, cc_tok, cr_tok = _usage_tokens(response)  # summed across pause_turn continuations
     continuations = 0
     while response.stop_reason == "pause_turn" and continuations < _MAX_PAUSE_CONTINUATIONS:
         messages = [
@@ -315,11 +335,18 @@ def _anthropic_complete(system: str, user: str) -> Completion:
             {"role": "assistant", "content": response.content},
         ]
         response = create(messages)
-        ci, co = _usage_tokens(response)
-        in_tok += ci
-        out_tok += co
+        i, o, cc, cr = _usage_tokens(response)
+        in_tok += i
+        out_tok += o
+        cc_tok += cc
+        cr_tok += cr
         continuations += 1
-    return Completion(_last_text(response), in_tok, out_tok)
+    # Log the four counts so cache behavior is observed, not assumed (cache_read>0 => cache hit).
+    _log.info(
+        "anthropic call: input=%d output=%d cache_read=%d cache_creation=%d",
+        in_tok, out_tok, cr_tok, cc_tok,
+    )
+    return Completion(_last_text(response), in_tok, out_tok, cc_tok, cr_tok)
 
 
 def _openai_complete(system: str, user: str) -> Completion:
@@ -339,7 +366,7 @@ def _openai_complete(system: str, user: str) -> Completion:
                 max_output_tokens=OPENAI_MAX_OUTPUT_TOKENS,
                 timeout=120.0,
             )
-            in_tok, out_tok = _usage_tokens(response)
+            in_tok, out_tok, _, _ = _usage_tokens(response)  # OpenAI has no prompt-cache fields
             return Completion(response.output_text, in_tok, out_tok)
         except (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError) as e:
             # Quota exhaustion is permanent — don't burn retries (the caller latches it).
@@ -382,6 +409,8 @@ def analyze_market(market: Market) -> Analysis:
         analysis = _parse_analysis(comp.text, market, model)
         analysis.input_tokens = comp.input_tokens
         analysis.output_tokens = comp.output_tokens
+        analysis.cache_creation_input_tokens = comp.cache_creation_input_tokens
+        analysis.cache_read_input_tokens = comp.cache_read_input_tokens
         return analysis
     except Exception as e:  # noqa: BLE001 — scanner needs graceful degradation
         return Analysis(market_id=market.id, model=model, error=_provider_error(e))
@@ -456,6 +485,8 @@ def refute_edge(market: Market, claimed_prob: float, original_model: str | None 
             refuter_model=model,
             input_tokens=comp.input_tokens,
             output_tokens=comp.output_tokens,
+            cache_creation_input_tokens=comp.cache_creation_input_tokens,
+            cache_read_input_tokens=comp.cache_read_input_tokens,
         )
     except Exception as e:  # noqa: BLE001 — a failed refutation shouldn't kill the scan
         return Refutation(error=_provider_error(e), refuter_model=model)

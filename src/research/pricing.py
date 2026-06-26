@@ -48,9 +48,24 @@ def rate_for(model: str | None) -> tuple[float, float]:
     return FALLBACK_RATE
 
 
-def cost_usd(model: str | None, input_tokens: int | None, output_tokens: int | None) -> float:
-    """Rough USD cost of one call given its token usage. 0.0 when usage is missing/zero."""
+def cost_usd(
+    model: str | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cache_creation_tokens: int | None = 0,
+    cache_read_tokens: int | None = 0,
+) -> float:
+    """Rough USD cost of one call given its token usage. 0.0 when usage is missing/zero.
+
+    Anthropic prompt caching (5-min TTL): a cache **write** costs 1.25x the input rate, a cache
+    **read** costs 0.1x. ``input_tokens`` is already the uncached remainder, so the three input
+    components are additive. The cache args default to 0, so OpenAI calls and older 2-arg callers
+    are unaffected.
+    """
     rate_in, rate_out = rate_for(model)
     it = input_tokens or 0
     ot = output_tokens or 0
-    return (it * rate_in + ot * rate_out) / 1_000_000.0
+    cc = cache_creation_tokens or 0
+    cr = cache_read_tokens or 0
+    input_cost = it * rate_in + cc * rate_in * 1.25 + cr * rate_in * 0.1
+    return (input_cost + ot * rate_out) / 1_000_000.0

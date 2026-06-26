@@ -59,11 +59,15 @@ def run_once() -> dict:
         alerts_emitted = 0
         llm_calls = 0
         cost_usd = 0.0
+        cache_read_tokens = 0
+        cache_creation_tokens = 0
         try:
             results, stats = scanner.scan_with_stats(_build_request())
             edges_found = len(results)
             llm_calls = int(stats.get("llm_calls", 0))
             cost_usd = float(stats.get("cost_usd", 0.0))
+            cache_read_tokens = int(stats.get("cache_read_tokens", 0))
+            cache_creation_tokens = int(stats.get("cache_creation_tokens", 0))
             signals_logged = scanner.persist_signals(results)
             alerts_emitted = scanner.emit_alerts(results)
         except Exception as e:  # noqa: BLE001
@@ -85,6 +89,8 @@ def run_once() -> dict:
         "resolutions_captured": resolutions_captured,
         "llm_calls": llm_calls,
         "cost_usd": round(cost_usd, 4),
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
         "errors": errors,
     }
     try:
