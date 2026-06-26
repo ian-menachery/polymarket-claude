@@ -33,6 +33,7 @@ source = ["research"]
 
 [tool.coverage.report]
 show_missing = true
-# Floor sits just below the current ~60% so it can't regress; ratchet up over time. The
-# network/LLM-heavy modules (polymarket/kalshi/scanner/scheduler) are the uncovered remainder.
-fail_under = 55
+# Floor sits just below the current total so it can't regress; ratchet up as coverage grows.
+# Remaining gaps are mostly the live httpx client paths (polymarket/kalshi) and the scheduler's
+# threading.Timer machinery, which aren't worth mocking.
+fail_under = 70
