@@ -39,6 +39,20 @@ def test_run_once_isolates_scan_failure_from_sweep(temp_db, monkeypatch, tmp_pat
     assert rec["resolutions_captured"] == 5  # sweep still runs despite the scan failing
 
 
+def test_sweep_only_tick_captures_resolutions(temp_db, monkeypatch) -> None:
+    # The cheap resolution-sweep timer settles markets (calibration flywheel) with no scan/LLM.
+    monkeypatch.setattr(scanner, "sweep_resolutions", lambda: 3)
+    assert scheduler.run_sweep_once() == 3
+
+
+def test_sweep_only_tick_isolates_failure(temp_db, monkeypatch) -> None:
+    def boom():
+        raise RuntimeError("gamma down")
+
+    monkeypatch.setattr(scanner, "sweep_resolutions", boom)
+    assert scheduler.run_sweep_once() == 0  # never raises; next sweep retries
+
+
 def test_history_missing_file_is_empty(temp_db, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("SCAN_LOG_PATH", str(tmp_path / "nope.jsonl"))
     h = scheduler.history()
