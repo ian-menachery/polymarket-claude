@@ -40,3 +40,9 @@ class TestCostUsd:
     def test_cache_args_default_to_zero(self) -> None:
         # Omitting the cache args must equal passing them as 0 (back-compat for 2-arg callers).
         assert pricing.cost_usd("gpt-5.5", 1000, 500) == pricing.cost_usd("gpt-5.5", 1000, 500, 0, 0)
+
+    def test_batch_flag_halves_cost(self) -> None:
+        full = pricing.cost_usd("claude-sonnet-4-6", 1_000_000, 1_000_000)
+        assert pricing.cost_usd("claude-sonnet-4-6", 1_000_000, 1_000_000, batch=True) == pytest.approx(
+            full * 0.5
+        )

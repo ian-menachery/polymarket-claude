@@ -54,13 +54,14 @@ def cost_usd(
     output_tokens: int | None,
     cache_creation_tokens: int | None = 0,
     cache_read_tokens: int | None = 0,
+    batch: bool = False,
 ) -> float:
     """Rough USD cost of one call given its token usage. 0.0 when usage is missing/zero.
 
     Anthropic prompt caching (5-min TTL): a cache **write** costs 1.25x the input rate, a cache
     **read** costs 0.1x. ``input_tokens`` is already the uncached remainder, so the three input
     components are additive. The cache args default to 0, so OpenAI calls and older 2-arg callers
-    are unaffected.
+    are unaffected. ``batch=True`` applies the Message Batches API's 50% discount to the whole total.
     """
     rate_in, rate_out = rate_for(model)
     it = input_tokens or 0
@@ -68,4 +69,5 @@ def cost_usd(
     cc = cache_creation_tokens or 0
     cr = cache_read_tokens or 0
     input_cost = it * rate_in + cc * rate_in * 1.25 + cr * rate_in * 0.1
-    return (input_cost + ot * rate_out) / 1_000_000.0
+    total = (input_cost + ot * rate_out) / 1_000_000.0
+    return total * 0.5 if batch else total

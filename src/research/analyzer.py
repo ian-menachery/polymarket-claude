@@ -297,25 +297,35 @@ def _last_text(response: Any) -> str:
     return texts[-1]
 
 
+def _anthropic_message_params(system: str, messages: list[dict]) -> dict:
+    """Shared Anthropic Messages params for an analysis.
+
+    Used by BOTH the synchronous ``_anthropic_complete`` and the batch builder, so a batched
+    analysis is byte-identical to a live one (the model behaves the same — important for keeping the
+    new model's calibration baseline consistent). The static ``system`` prompt is a cache_control
+    block; with tools + system rendering before messages, the breakpoint caches that whole prefix
+    (a no-op below Sonnet 4.6's ~2048-token minimum — see _anthropic_complete logging).
+    """
+    return {
+        "model": os.getenv("ANALYSIS_MODEL", ANTHROPIC_DEFAULT_MODEL),
+        "max_tokens": MAX_TOKENS,
+        "tools": [WEB_SEARCH_TOOL],
+        "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+        "messages": messages,
+    }
+
+
 def _anthropic_complete(system: str, user: str) -> Completion:
     """Anthropic messages.create with web search, 429 backoff, and pause_turn resume.
 
-    The static ``system`` prompt is sent as a cached block (cache_control: ephemeral); with tools +
-    system rendering before messages, the breakpoint caches that whole prefix. NOTE: this only
-    engages if the prefix clears the model's minimum (~2048 tokens for Sonnet 4.6) — today's ~300-
-    token prefix is below that, so cache_* will read 0 (we log it rather than assume).
+    cache_* token usage is summed across continuations and logged (it reads 0 today — the ~300-token
+    prefix is below Sonnet 4.6's ~2048 cache minimum).
     """
-    model = os.getenv("ANALYSIS_MODEL", ANTHROPIC_DEFAULT_MODEL)
-    cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-
     def create(messages: list[dict]) -> Any:
         for attempt in range(_MAX_RETRIES):
             try:
                 return _get_client().messages.create(
-                    model=model, max_tokens=MAX_TOKENS,
-                    tools=[WEB_SEARCH_TOOL],  # type: ignore[list-item]  # SDK ToolParam stub stricter than the runtime accepts
-                    system=cached_system,  # type: ignore[arg-type]  # text block + cache_control is valid at runtime
-                    messages=messages,  # type: ignore[arg-type]  # list[dict] is valid MessageParam at runtime
+                    **_anthropic_message_params(system, messages),  # type: ignore[arg-type]
                     timeout=120.0,
                 )
             except (anthropic.RateLimitError, anthropic.APITimeoutError,
@@ -490,3 +500,41 @@ def refute_edge(market: Market, claimed_prob: float, original_model: str | None 
         )
     except Exception as e:  # noqa: BLE001 — a failed refutation shouldn't kill the scan
         return Refutation(error=_provider_error(e), refuter_model=model)
+
+
+# --- Message Batches (Anthropic) -----------------------------------------------
+# The overnight scan submits one batch instead of N synchronous calls (50% cheaper). web_search and
+# prompt caching work in batches unchanged, so the analyze request batches as-is. Synchronous on-demand
+# analysis (analyze_market) is untouched. See scanner.build_batch_requests / ingest_batch.
+
+
+def batch_request_params(market: Market) -> dict:
+    """The Anthropic Messages params for analyzing one market — identical to the synchronous path."""
+    return _anthropic_message_params(SYSTEM_PROMPT, [{"role": "user", "content": _user_prompt(market)}])
+
+
+def submit_batch(requests: list[dict]) -> str:
+    """Submit a Message Batch (``requests`` are ``{custom_id, params}`` dicts). Returns the batch id."""
+    batch = _get_client().messages.batches.create(requests=requests)  # type: ignore[arg-type]
+    return batch.id
+
+
+def batch_status(batch_id: str) -> str:
+    """``processing_status`` of a batch — ``"ended"`` when results are ready."""
+    return str(_get_client().messages.batches.retrieve(batch_id).processing_status)
+
+
+def batch_results(batch_id: str) -> Any:
+    """Iterable of batch result entries (each has ``.custom_id`` + ``.result``), in any order."""
+    return _get_client().messages.batches.results(batch_id)
+
+
+def parse_batch_result(message: Any, market: Market, model: str) -> Analysis:
+    """Turn a succeeded batch result's message into a stamped Analysis (reuses the live parser)."""
+    in_tok, out_tok, cc_tok, cr_tok = _usage_tokens(message)
+    analysis = _parse_analysis(_last_text(message), market, model)
+    analysis.input_tokens = in_tok
+    analysis.output_tokens = out_tok
+    analysis.cache_creation_input_tokens = cc_tok
+    analysis.cache_read_input_tokens = cr_tok
+    return analysis

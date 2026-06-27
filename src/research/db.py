@@ -96,6 +96,14 @@ CREATE TABLE IF NOT EXISTS signals (
 
 CREATE INDEX IF NOT EXISTS idx_signals_market_id  ON signals(market_id);
 CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS batches (
+    id            TEXT PRIMARY KEY,      -- Anthropic Message Batch id
+    status        TEXT    NOT NULL,      -- 'submitted' | 'ingested' | 'error'
+    submitted_at  TEXT    NOT NULL,
+    ingested_at   TEXT    DEFAULT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0
+);
 """
 
 STALE_THRESHOLD = float(os.getenv("STALE_THRESHOLD", "0.04"))  # price move (0-1) since analysis = stale
@@ -559,3 +567,35 @@ def signal_summary() -> dict:
         "realized_pnl": float(row["realized_pnl"]) if row["realized_pnl"] is not None else 0.0,
         "avg_ev": float(row["avg_ev"]) if row["avg_ev"] is not None else None,
     }
+
+
+# --- batches (Message Batches state machine) -----------------------------------
+
+
+def save_batch(batch_id: str, request_count: int) -> None:
+    """Record a freshly-submitted batch (status='submitted'). INSERT OR REPLACE on the id."""
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO batches (id, status, submitted_at, request_count) "
+            "VALUES (?, 'submitted', ?, ?)",
+            (batch_id, datetime.now(timezone.utc).isoformat(), request_count),
+        )
+
+
+def get_inflight_batch() -> dict | None:
+    """The oldest still-submitted batch (the one the scheduler should poll), or None."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id, status, submitted_at, request_count FROM batches "
+            "WHERE status = 'submitted' ORDER BY submitted_at LIMIT 1"
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def mark_batch_ingested(batch_id: str) -> None:
+    """Mark a batch's results retrieved + persisted. The one sanctioned UPDATE to a batch row."""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE batches SET status = 'ingested', ingested_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), batch_id),
+        )
