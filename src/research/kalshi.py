@@ -463,6 +463,24 @@ def _fetch_by_series(series_tickers: list[str], max_markets: int, min_volume: fl
     return markets[:max_markets]
 
 
+def _attach_siblings(markets: list[Market]) -> None:
+    """Tag each market with the OTHER outcomes of its event (ticker minus the strike), so the analysis
+    prompt can sanity-check a forecast against the market's full distribution — the safeguard against
+    e.g. forecasting the wrong weather station. Mutates in place; only for events with >=2 outcomes.
+    """
+    groups: dict[str, list[Market]] = {}
+    for m in markets:
+        groups.setdefault(m.id.rsplit("-", 1)[0], []).append(m)
+    for grp in groups.values():
+        if len(grp) < 2:
+            continue
+        for m in grp:
+            m.siblings = [
+                {"label": (o.description or o.question)[:40], "prob": o.market_prob}
+                for o in grp if o.id != m.id
+            ]
+
+
 def fetch_all_active(
     max_markets: int = 500, min_volume: float = 1000.0, max_pages: int = 20
 ) -> list[Market]:
@@ -479,7 +497,9 @@ def fetch_all_active(
     """
     series = [s.strip() for s in os.getenv("KALSHI_SERIES", DEFAULT_KALSHI_SERIES).split(",") if s.strip()]
     if series:
-        return _fetch_by_series(series, max_markets, min_volume)
+        mk = _fetch_by_series(series, max_markets, min_volume)
+        _attach_siblings(mk)
+        return mk
 
     limit = 200  # Kalshi /events allows up to 200/page
     markets: list[Market] = []
@@ -507,7 +527,9 @@ def fetch_all_active(
                     "kept %d with volume_total >= %s) before reaching max_markets=%d",
                     max_pages, raw_seen, pages, len(markets), min_volume, max_markets,
                 )
-    return markets[:max_markets]
+    out = markets[:max_markets]
+    _attach_siblings(out)
+    return out
 
 
 def health_check() -> dict:

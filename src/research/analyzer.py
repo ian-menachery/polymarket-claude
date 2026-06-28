@@ -56,6 +56,11 @@ SYSTEM_PROMPT = (
     "Weather Service / NOAA climatological report for weather (the exact station), the Bureau of "
     "Labor Statistics (plus the Cleveland Fed nowcast) for CPI/inflation and jobs, the issuing "
     "agency for other econ releases. Prefer the official figure over secondary aggregators.\n"
+    "   WEATHER: forecast the EXACT station the criteria name (e.g. 'Los Angeles Airport / KLAX'), "
+    "NOT the generic city. Coastal/airport stations (LAX, SFO, etc.) run materially cooler than the "
+    "city center due to the marine layer — a downtown forecast can be 8-10F too hot. Use the NWS "
+    "POINT forecast for that station; if you can't confirm the station-specific number, say so and "
+    "lower confidence rather than guessing from a city forecast.\n"
     "3. Estimate the YES probability for the EXACT resolution condition, and sanity-check it against "
     "the current market price — a very large gap usually means you misread the criteria; re-verify.\n\n"
     "Respond ONLY with valid JSON — no markdown, no backticks:\n"
@@ -186,12 +191,31 @@ def _user_prompt(market: Market) -> str:
     # The exact resolution criteria (threshold/source/date) are the highest-signal context — they
     # prevent misreading what's actually being predicted. Include them verbatim when available.
     rules = f"\nResolution criteria: {market.resolution_rules[:600]}" if market.resolution_rules else ""
+    # Sibling outcomes of the same event, as a market-distribution sanity anchor. This is the guard
+    # against fabricated edges (e.g. forecasting the wrong weather station): if your estimate grossly
+    # contradicts where the market puts its mass, re-verify your data before trusting it.
+    siblings = ""
+    if market.siblings:
+        lines = "\n".join(
+            f"  - {s.get('label','?')}: {round(s['prob'] * 100)}%" if s.get("prob") is not None
+            else f"  - {s.get('label','?')}: (no price)"
+            for s in market.siblings[:12]
+        )
+        siblings = (
+            "\nRelated outcomes in this same event, with current market prices (THIS market is one "
+            "of them):\n" + lines +
+            "\nUse this as a sanity check on your estimate — mutually-exclusive bands sum to ~100%; "
+            '"above X" thresholds must decrease as X rises. If your forecast implies a very different '
+            "distribution than the market's, you have likely misread the criteria (e.g. wrong station/"
+            "source) — re-verify before trusting your number."
+        )
     return (
         f'Market: "{market.question}"\n'
         f"{price_line}\n"
         f"Closes: {closes}"
         f"{context}"
-        f"{rules}\n\n"
+        f"{rules}"
+        f"{siblings}\n\n"
         "Research the exact resolution criteria above, then give your calibrated probability estimate."
     )
 

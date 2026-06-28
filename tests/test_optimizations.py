@@ -163,6 +163,31 @@ class TestObservedCostEstimate:
         assert scanner._observed_cost_per_call("claude-sonnet-4-6") is None
 
 
+class TestEventSiblings:
+    def test_attach_siblings_within_event(self) -> None:
+        ms = [
+            make_market(id="KXHIGHLAX-26JUN28-B71.5", exchange="kalshi", market_prob=0.62, description="71 to 72"),
+            make_market(id="KXHIGHLAX-26JUN28-T72", exchange="kalshi", market_prob=0.13, description="73 or above"),
+            make_market(id="KXBTCD-26JUN-T60", exchange="kalshi", market_prob=0.5, description="btc"),  # lone
+        ]
+        kalshi._attach_siblings(ms)
+        la = next(m for m in ms if m.id.endswith("B71.5"))
+        assert [s["label"] for s in la.siblings] == ["73 or above"]
+        assert la.siblings[0]["prob"] == pytest.approx(0.13)
+        btc = next(m for m in ms if m.id.startswith("KXBTCD"))
+        assert btc.siblings == []  # only outcome in its event -> no sibling context
+
+    def test_user_prompt_includes_sibling_distribution(self) -> None:
+        m = make_market(market_prob=0.62, description="71 to 72")
+        m.siblings = [{"label": "73 or above", "prob": 0.13}, {"label": "69 to 70", "prob": 0.30}]
+        p = analyzer._user_prompt(m)
+        assert "Related outcomes" in p and "73 or above" in p and "13%" in p
+
+    def test_system_prompt_has_station_rigor(self) -> None:
+        sp = analyzer.SYSTEM_PROMPT.lower()
+        assert "exact station" in sp and "marine layer" in sp
+
+
 class TestHealthCheck:
     def _patch(self, monkeypatch, *, book):
         m = make_market(id="KXHIGHNY-1", exchange="kalshi")

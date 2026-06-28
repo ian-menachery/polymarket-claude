@@ -51,6 +51,10 @@ class Market(BaseModel):
     tags: list[str]
     description: str
     resolution_rules: str = ""  # exact settlement criteria (Kalshi rules_primary) — grounds the analysis
+    # Other outcomes of the SAME event (mutually-exclusive bands / cumulative thresholds), each
+    # {"label": str, "prob": float|None} — passed to the prompt as a market-distribution sanity anchor.
+    # Transient: attached at fetch time, NOT persisted (absent from DB columns/row-mappers).
+    siblings: list[dict] = Field(default_factory=list)
     fetched_at: datetime = Field(default_factory=_utcnow)
 
 

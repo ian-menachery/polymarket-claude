@@ -70,7 +70,7 @@ def test_app_mounts(live_server) -> None:
         wait = WebDriverWait(driver, 30)
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "h1")))
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".tab")))
-        assert "Polymarket Research Copilot" in driver.find_element(By.CSS_SELECTOR, "h1").text
+        assert "PMRA" in driver.find_element(By.CSS_SELECTOR, "h1").text
         tabs = [t.text for t in driver.find_elements(By.CSS_SELECTOR, ".tab")]
         assert "Markets" in tabs, f"expected the Markets tab, got: {tabs}"
     finally:
