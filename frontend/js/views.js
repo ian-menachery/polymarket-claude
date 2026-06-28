@@ -534,7 +534,12 @@ function SignalsView() {
   if (err) return <main><div className="err">{err}</div></main>;
   if (!data) return <main><div className="empty">Loading…</div></main>;
 
-  const s = data.summary, sigs = data.signals;
+  const s = data.summary, allSigs = data.signals;
+  // Hide stale clutter: open signals that are untradeable (non-Kalshi) or far-dated (>45d) — artifacts
+  // of early seeds that won't resolve usefully. Data is kept in the DB; this is display-only.
+  const sigs = allSigs.filter((g) =>
+    g.resolved || (g.exchange === "kalshi" && (g.days_to_close == null || g.days_to_close <= 45)));
+  const hidden = allSigs.length - sigs.length;
   const winPct = s.resolved > 0 ? Math.round((s.wins / s.resolved) * 100) + "%" : "—";
 
   return (
@@ -563,6 +568,7 @@ function SignalsView() {
           <span className="kv">win rate <b>{winPct}</b></span>
           <span className="kv">realized P&L <b>{money(s.realized_pnl)}</b></span>
           <span className="kv">avg EV <b>{pct1(s.avg_ev)}</b></span>
+          {hidden > 0 && <span className="kv dim">{hidden} stale/untradeable hidden</span>}
         </div>
         <div className="cal-note">
           Each signal is an actionable edge. <b>Bet</b> shows a conservative fractional-Kelly stake;

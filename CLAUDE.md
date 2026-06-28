@@ -1,4 +1,4 @@
-# Polymarket Research Copilot — CLAUDE.md
+# Prediction-Market Research Copilot — CLAUDE.md
 
 ## Working agreement on planning
 
@@ -9,66 +9,112 @@ Still state a brief plan when a change is large, risky, ambiguous, or hard to re
 otherwise just implement. Surface contradictions and unexpected findings as before.
 
 ## What this is
-A local research tool that fetches live Polymarket markets, analyzes them with an LLM (web search enabled), and surfaces markets where the model's probability estimate diverges significantly from the current price. Companion project to the calibration tracker (separate repo).
+
+A local tool whose **goal is real ROI: trading P&L > the Claude credits it spends.** It fetches
+live prediction markets, has an LLM (web search enabled) estimate each market's probability against
+the current price, and surfaces executable, net-of-fee edges as **forward signals** with a
+recommended (fractional-Kelly) stake. You place the bets by hand and log the fills; calibration and a
+P&L/ROI track record build as markets resolve.
+
+**Kalshi-only for trading** (owner is US-based; Polymarket blocks US users). Polymarket remains a
+*free signal source* the engine can still read, but `EXCHANGE=kalshi` so we never spend LLM budget on
+markets we can't trade. The tool does **not** place orders — it finds + sizes edges; execution is manual.
+
+Pipeline: **series discovery → resolution-grounded LLM analysis → executable signal (net-of-fee,
+deduped) → trade-ticket (capped stake) → ROI scoreboard**, with calibration + a "why did it diverge?"
+review loop building over time.
+
+Status (2026-06-28): live and feature-complete for the **validate-on-paper** phase. Model
+`claude-sonnet-4-6` is **uncalibrated** (0 resolved pairs yet) — treat every edge as a small
+experiment until calibration activates. Companion to the calibration tracker (separate repo).
 
 ## Stack (locked)
 - `flask`, `httpx` (sync), `anthropic`, `openai`, `pydantic`, `sqlite3` (stdlib), `python-dotenv`
-- No `asyncio`. No `aiosqlite`. No React build pipeline. No Docker. No Postgres.
+- No `asyncio`. No `aiosqlite`. No React build pipeline (frontend is CDN React + Babel). No Docker. No Postgres.
 - New dependencies require asking first.
 
 ## LLM provider (dual-provider)
-The analysis engine (`analyzer.py`) supports **both OpenAI and Anthropic**, selected at
-runtime by the `LLM_PROVIDER` env var (`openai` or `anthropic`). Each `Analysis` records the
-`model` that produced it, so calibration stays per-model across a provider switch.
+`analyzer.py` supports **OpenAI and Anthropic**, selected by `LLM_PROVIDER`. Each `Analysis` records
+its `model`, so calibration stays **per-model** across a switch (a switch starts a fresh per-model
+history — uncalibrated until `CALIBRATION_MIN_N` resolved pairs).
+- **Primary: Anthropic** — `.env`: `LLM_PROVIDER=anthropic`, `ANALYSIS_MODEL=claude-sonnet-4-6`
+  (uses the server-side `web_search` tool). **OpenAI is the reversible fallback** (`LLM_PROVIDER=openai`,
+  `OPENAI_MODEL`) — but its credits are exhausted, so it latches `openai_exhausted` and errors rather
+  than silently falling back. Keep cross-model refutation OFF (`CROSS_MODEL_ADVERSARIAL` blank) → Claude
+  self-refutes, avoiding the exhausted-OpenAI path.
 
-- **Currently primary: Anthropic** — `.env` sets `LLM_PROVIDER=anthropic` and
-  `ANALYSIS_MODEL=claude-sonnet-4-6` (also the code default). The Anthropic path uses the
-  server-side `web_search` tool (confirm web_search is enabled for the org in the Claude Console).
-- **OpenAI is the reversible fallback** — set `LLM_PROVIDER=openai` (+ `OPENAI_MODEL`, default
-  `gpt-5.5`) and restart to switch back. No code change needed; the path is kept intact.
-- Switch providers by changing `LLM_PROVIDER` in `.env` (then restart).
-- Each `Analysis` records its `model`, so calibration stays **per-model** across a switch — a
-  provider change starts a fresh per-model calibration history (uncalibrated until `CALIBRATION_MIN_N`
-  resolved pairs); don't size real positions on a new model until its outcomes confirm calibration.
-- No silent fallback: if OpenAI credits are exhausted (`insufficient_quota`), the engine latches
-  `openai_exhausted` and returns an explicit error — it does not quietly switch providers.
-
-## Quick start
+## Quick start / resume
 ```bash
 make install
-cp .env.example .env    # set LLM_PROVIDER + the matching API key
-                        # (OpenAI: OPENAI_API_KEY; Anthropic: ANTHROPIC_API_KEY)
-make run                # → http://localhost:5000
+cp .env.example .env     # set LLM_PROVIDER=anthropic + ANTHROPIC_API_KEY (and Kalshi optional — public reads work)
+make run                 # → http://localhost:5000   (PYTHONPATH=src python -m research.app)
 ```
+On this box `python`/`py` aren't on PATH; use `$LOCALAPPDATA/Programs/Python/Python312/python.exe` with
+`PYTHONPATH=src`. To keep it running unattended (survives logoff), the owner runs a Windows
+`schtasks /SC ONLOGON` task pointing at `run_copilot.bat`.
 
 ## Project structure
 ```
-polymarket-research/
+polymarket-claude/
 ├── CLAUDE.md                 ← you are here
-├── ARCHITECTURE.md           ← data flow, DB schema, component specs
-├── ROADMAP.md                ← phased feature plan
-├── API_REFERENCE.md          ← Polymarket + Anthropic API reference
-├── CALIBRATION_NOTES.md      ← integration with calibration tracker
-├── src/
-│   └── research/
-│       ├── models.py         ← Pydantic models
-│       ├── db.py             ← sqlite3 access layer (sync only)
-│       ├── polymarket.py     ← Polymarket API client (httpx sync)
-│       ├── analyzer.py       ← LLM analysis engine (OpenAI or Anthropic, via LLM_PROVIDER)
-│       ├── scanner.py        ← batch divergence scanner
-│       └── app.py            ← Flask app + all routes
+├── ARCHITECTURE.md / ROADMAP.md / API_REFERENCE.md / CALIBRATION_NOTES.md  ← (older docs; partly stale)
+├── run_copilot.bat           ← launcher for the unattended Scheduled Task
+├── src/research/
+│   ├── models.py             ← Pydantic models (Market, Analysis, Signal, ScanRequest, ...)
+│   ├── db.py                 ← sqlite3 access layer (sync; the only raw-SQL module)
+│   ├── polymarket.py         ← Polymarket API client (httpx) + shared Book/VWAP/retry helpers
+│   ├── kalshi.py             ← Kalshi API client: series discovery, order book, resolution, health_check
+│   ├── exchanges.py          ← dispatch between polymarket/kalshi by EXCHANGE / market.exchange
+│   ├── analyzer.py           ← LLM analysis engine (resolution-grounded prompt) + refutation
+│   ├── scanner.py            ← scan/EV, signals, sizing, fees, dedup, resolution sweep, alerts
+│   ├── calibration.py        ← per-model temperature scaling + Brier/log-loss leaderboard
+│   ├── performance.py        ← signal track record, by_category, ROI (P&L − credit spend), divergence_review
+│   ├── pricing.py            ← per-model token → USD cost
+│   ├── scheduler.py          ← stdlib threading.Timer cadences (scan / resolution sweep / health heartbeat)
+│   └── app.py                ← Flask app + all routes
 ├── frontend/
-│   └── index.html            ← single file served by Flask at /
-├── data/                     ← SQLite DB, gitignored
-├── requirements.txt
-├── .env.example
+│   ├── index.html            ← shell + CSS, served at /
+│   └── js/{api.js, views.js, app.js}  ← CDN-React UI (no build step)
+├── data/                     ← gitignored: <db>.db, scan_log.jsonl, health.jsonl, alerts.jsonl, app.log
+├── .env / .env.example       ← .env is gitignored (holds API keys)
 └── Makefile
 ```
 
+## Operating the flywheel (runbook)
+
+**Cadences** (`scheduler.py`, armed in `app.py __main__`): batched scan every `SCAN_INTERVAL_HOURS`
+(24), resolution sweep + Kalshi health heartbeat every `AUTO_RESOLUTION_INTERVAL_HOURS` (6, free).
+
+**Key env knobs** (full annotated list in `.env.example`):
+- *Discovery:* `EXCHANGE=kalshi`; `KALSHI_SERIES` (ordered weather→econ→crypto = analysis priority);
+  `KALSHI_MIN_VOLUME`.
+- *Cost:* `MAX_LLM_CALLS_PER_SCAN` (10), `SPEND_CAP_USD` (scheduler pauses scans past it), `SCAN_INTERVAL_HOURS`.
+  Real cost ≈ **$0.16/analysis** (web search + cached context), not the old token guess — the estimator
+  now uses real recent cost.
+- *Quality:* `SIGNAL_MIN_EV`, `MIN_BOOK_DEPTH_USD`, `EXTREME_DIVERGENCE` (flag misreads, withhold stake),
+  `REFUTE_TOP` (adversarial pass), `KALSHI_FEE_RATE` (netted into EV), `MAX_SIGNALS_PER_EVENT` (dedup).
+- *Near-dated bias:* `SCAN_MIN_DAYS_TO_CLOSE` / `SCAN_MAX_DAYS_TO_CLOSE` (resolve fast → calibrate fast).
+- *Sizing:* `BANKROLL_USD`, `KELLY_FRACTION` (¼-Kelly), `MAX_POSITION_USD` (hard cap).
+
+**Reading the UI** (`http://localhost:5000`): **Signals** = actionable trades (recommended stake +
+Kalshi link), the ROI scoreboard (realized P&L − credit spend), and the "⚠ Extreme divergences —
+review" diagnosis panel; **Calibration** = progress toward 50 resolved pairs; **Performance** =
+by_category P&L. `/api/health` (+ `data/health.jsonl` heartbeat) shows Kalshi schema liveness.
+
+**The trade loop:** pick a sanity-checked Signal → place the small bet on Kalshi → **Log fill** →
+realized P&L lands when it resolves.
+
+**Size-up rule:** keep stakes tiny until `claude-sonnet-4-6` crosses **50 resolved pairs AND net ROI is
+positive**; only then raise `MAX_POSITION_USD`.
+
+**Open loose ends:** the Kalshi "Trade ↗" link uses the series-page URL (`/markets/{series}`) — confirm
+it resolves from a real browser and refine to a deep link if needed. Stale far-dated/untradeable open
+signals are **hidden in the UI, not deleted** (a true DB purge is blocked by the destructive-action guard).
+
 ## Module boundaries (enforce these)
-- All Polymarket API calls live in `polymarket.py`. No `httpx` imports anywhere else.
-- All DB operations live in `db.py`. No raw SQL outside that module.
-- No business logic in `db.py`. It only reads and writes.
+- All exchange API calls live in `polymarket.py` / `kalshi.py` — the only `httpx` importers; `exchanges.py`
+  dispatches between them. No `httpx` elsewhere.
+- All DB operations live in `db.py` (the only raw-SQL module). No business logic there — it only reads/writes.
 - Flask routes in `app.py` call the modules — they don't contain logic.
 
 ## Code conventions
@@ -76,6 +122,8 @@ polymarket-research/
 - All probabilities stored as float 0–1 in DB; displayed as % in frontend
 - Market IDs are always strings
 - Never delete or overwrite analysis records — only append
+- When adding a `Market`/`Signal` field: update the model **and** the DB column + migration + row-mapper
+  + the INSERT placeholder count (`len(_*_COLUMNS.split(","))`).
 
 ## Things you should not do
 - Do not add infrastructure speculatively (no FastAPI upgrade, no Redis, no Celery)
@@ -85,18 +133,10 @@ polymarket-research/
 - Do not hardcode API keys (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) — read them from env
 
 ## Things you should do
-- After each substantive change, suggest a commit message (short, imperative)
+- After each substantive change, suggest a commit message (short, imperative); commit + push to `main`
 - When you finish a piece of work, summarize what changed in 2–3 sentences
-- If a request seems like Phase 2+ work, say so and ask whether to skip ahead
-
-## Phase awareness
-Phases are in ROADMAP.md. Always know which phase we're in.
-Current phase: **Phase 5 — Advanced** (in progress). Phases 1–4 are complete (EV scanner,
-persistence/history, calibration + resolution sweep). Phase 5 is mostly built: scheduled background
-scanning (stdlib threading.Timer, not APScheduler), portfolio simulator, crowd backtesting,
-multi-model comparison (cross-model adversarial refutation), and webhook/forward-signal alerting
-(forward signal log + high-divergence alerts). Note: the scanner is a Flask/httpx-sync stack, not the
-FastAPI/`main.py` named in ROADMAP.md's early checklists.
+- Keep changes data-driven: further features should wait until resolved-market data shows what's needed
 
 ## Relationship to calibration tracker
-This is a separate project. The `polymarket.py` module here borrows patterns from the calibration tracker's `polymarket/` module (API normalization, gotchas) but does not import from it directly. The shared data contract is documented in CALIBRATION_NOTES.md.
+Separate project. `polymarket.py` borrows patterns (API normalization, gotchas) from the calibration
+tracker's `polymarket/` module but doesn't import it. Shared data contract: CALIBRATION_NOTES.md.
