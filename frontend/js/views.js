@@ -485,11 +485,47 @@ function CalibrationView() {
   );
 }
 
+function FillCell({ g, onFilled }) {
+  const [open, setOpen] = useState(false);
+  const [stake, setStake] = useState(g.recommended_stake_usd ? String(g.recommended_stake_usd) : "");
+  const [price, setPrice] = useState(g.price_paid != null ? g.price_paid.toFixed(2) : "");
+  const [busy, setBusy] = useState(false);
+  const [e, setE] = useState(null);
+
+  if (g.actual_stake_usd != null) {
+    return <span title={`filled ${shares(g.actual_shares)} @ ${pct(g.actual_price)}`}>
+      {money2(g.actual_stake_usd)} <span className="dim">filled</span></span>;
+  }
+  if (!open) {
+    return <button className="mini" onClick={() => setOpen(true)}>Log fill</button>;
+  }
+  const submit = () => {
+    setBusy(true); setE(null);
+    API.recordFill(g.id, { stake_usd: parseFloat(stake), price: parseFloat(price) })
+      .then(() => onFilled())
+      .catch((err) => { setE(err.message); setBusy(false); });
+  };
+  return (
+    <span className="fill-form">
+      <input type="number" step="0.01" placeholder="$ stake" value={stake} onChange={(ev) => setStake(ev.target.value)} style={{ width: 64 }} />
+      <input type="number" step="0.01" placeholder="price" value={price} onChange={(ev) => setPrice(ev.target.value)} style={{ width: 54 }} />
+      <button className="mini primary" disabled={busy} onClick={submit}>{busy ? "…" : "Save"}</button>
+      <button className="mini" onClick={() => setOpen(false)}>✕</button>
+      {e && <span className="err-inline">{e}</span>}
+    </span>
+  );
+}
+
 function SignalsView() {
   const [data, setData] = useState(null);
+  const [roi, setRoi] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [err, setErr] = useState(null);
-  useEffect(() => { API.getSignals().then(setData).catch((e) => setErr(e.message)); }, []);
+  const load = () => {
+    API.getSignals().then(setData).catch((e) => setErr(e.message));
+    API.getRoi().then(setRoi).catch(() => {});
+  };
+  useEffect(load, []);
   // Alerts are best-effort — a failure here must never break the signals view.
   useEffect(() => { API.getAlerts().then(setAlerts).catch(() => {}); }, []);
 
@@ -501,6 +537,22 @@ function SignalsView() {
 
   return (
     <main>
+      {roi && (
+        <div className="cal-section">
+          <div className="cal-head">
+            <span className="cal-model">ROI — paying for the credits?</span>
+            <span className="kv">realized P&L <b className={roi.realized_pnl >= 0 ? "up" : "down"}>{money2(roi.realized_pnl)}</b></span>
+            <span className="kv">credit spend <b>{money2(roi.credit_spend)}</b></span>
+            <span className="kv">net <b className={roi.net >= 0 ? "up" : "down"}>{money2(roi.net)}</b></span>
+            <span className={"badge " + (roi.covered ? "up" : "fair")}>{roi.covered ? "covering costs" : "not yet"}</span>
+          </div>
+          <div className="cal-note">
+            Net = realized trading P&L − all Claude analysis spend to date. {roi.open} position(s) still
+            open (excluded until they resolve). Credit spend counts batched scans at full price (slight over-estimate).
+          </div>
+        </div>
+      )}
+
       <div className="cal-section">
         <div className="cal-head">
           <span className="cal-model">Forward signals</span>
@@ -511,8 +563,8 @@ function SignalsView() {
           <span className="kv">avg EV <b>{pct1(s.avg_ev)}</b></span>
         </div>
         <div className="cal-note">
-          Each signal is a forward, lookahead-free record of an actionable edge, sized at the
-          modeled VWAP fill. P&L is realized when the market resolves.
+          Each signal is an actionable edge. <b>Bet</b> shows a conservative fractional-Kelly stake;
+          place it on Kalshi, then <b>Log fill</b> what you actually got so realized P&L is real.
         </div>
         {sigs.length === 0 ? (
           <div className="empty">No signals yet — enable the auto-scan (<code>SCAN_INTERVAL_HOURS</code>) or run a scan with logging.</div>
@@ -523,6 +575,7 @@ function SignalsView() {
                 <tr>
                   <th>Time</th><th className="q-cell">Market</th><th>Side</th>
                   <th>Our prob</th><th>Mid</th><th>Price</th><th>EV%</th>
+                  <th>Bet</th><th></th><th>Fill</th>
                   <th>Verdict</th><th>Status</th><th>P&L</th>
                 </tr>
               </thead>
@@ -536,6 +589,9 @@ function SignalsView() {
                     <td>{pct(g.market_prob)}</td>
                     <td>{pct(g.price_paid)}</td>
                     <td>{pct1(g.ev_pct)}</td>
+                    <td>{!g.resolved && g.recommended_stake_usd > 0 ? <b>{money2(g.recommended_stake_usd)}</b> : "—"}</td>
+                    <td>{!g.resolved && <a href={tradeUrl(g.market_id, g.exchange)} target="_blank" rel="noopener noreferrer">Trade ↗</a>}</td>
+                    <td>{g.resolved ? "—" : <FillCell g={g} onFilled={load} />}</td>
                     <td>{g.adversarial_verdict
                       ? <span className={g.adversarial_verdict === "holds" ? "v-holds" : "v-refuted"}
                           title={g.refuter_model ? "refuter: " + g.refuter_model : ""}>{g.adversarial_verdict}</span>

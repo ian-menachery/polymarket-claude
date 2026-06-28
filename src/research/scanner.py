@@ -81,6 +81,24 @@ def _ev_fields(
             "price_paid": price_paid, "executable": executable}
 
 
+def recommended_stake_usd(sig: Signal) -> float:
+    """Conservative manual-trade stake (USD) for a signal, from fractional Kelly.
+
+    ``BANKROLL_USD`` is the account it scales against; ``KELLY_FRACTION`` (default quarter-Kelly)
+    keeps sizing conservative while the model is uncalibrated. Capped by the depth-modeled fill
+    cost (``fill_shares * price_paid``) so we never recommend more than the book showed it could
+    fill at the modeled price, and by the bankroll. Returns 0.0 when there's no positive edge.
+    """
+    kelly = sig.kelly or 0.0
+    if kelly <= 0:
+        return 0.0
+    bankroll = float(os.getenv("BANKROLL_USD", "200"))
+    fraction = float(os.getenv("KELLY_FRACTION", "0.25"))
+    depth_cap = sig.fill_shares * sig.price_paid  # max $ the book filled at the modeled VWAP
+    raw = min(fraction * kelly * bankroll, depth_cap, bankroll)
+    return round(max(raw, 0.0), 2)
+
+
 def _book_fills(book: polymarket.Book, target: float) -> dict:
     """Top-of-book + VWAP fills to deploy ``target`` USD on each side.
 
@@ -469,13 +487,18 @@ def sweep_resolutions() -> int:
         if outcome is not None:
             db.mark_resolution(market_id, outcome)
             resolved += 1
-            # Settle any open forward signals on this market. P&L is modeled at the
-            # recorded VWAP fill: a winning side pays (1 - price_paid) per share, a
-            # losing side forfeits price_paid per share. (Formula lives here, not db.)
+            # Settle any open forward signals on this market. P&L uses the ACTUAL recorded
+            # fill when present (real manual bet), else the modeled VWAP fill: a winning side
+            # pays (1 - price) per share, a losing side forfeits price per share. (Formula
+            # lives here, not db.)
             for sig in db.get_open_signals_for_market(market_id):
                 assert sig.id is not None  # persisted rows always carry an id
+                if sig.actual_shares is not None and sig.actual_price is not None:
+                    shares, price = sig.actual_shares, sig.actual_price
+                else:
+                    shares, price = sig.fill_shares, sig.price_paid
                 won = (sig.side == "YES") == outcome
-                pnl = sig.fill_shares * (1.0 - sig.price_paid) if won else -sig.fill_shares * sig.price_paid
+                pnl = shares * (1.0 - price) if won else -shares * price
                 db.resolve_signal(sig.id, outcome, pnl)
     return resolved
 

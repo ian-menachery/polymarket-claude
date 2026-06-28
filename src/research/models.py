@@ -176,7 +176,13 @@ class Signal(BaseModel):
     refuter_model: str | None = None  # which model ran the refutation (None if not run)
     resolved: bool | None = None
     resolution: bool | None = None  # True=YES won, False=NO won
-    pnl: float | None = None  # realized $ on resolution (modeled VWAP fill); None while open
+    pnl: float | None = None  # realized $ on resolution; None while open
+    # Manual execution: the real bet you placed (None until recorded via /api/signals/<id>/fill).
+    # When set, the resolution sweep realizes P&L from these instead of the modeled VWAP fill —
+    # so the track record reflects actual fills, not the $50 model.
+    actual_stake_usd: float | None = None
+    actual_price: float | None = None  # your avg fill price/share on the chosen side
+    actual_shares: float | None = None  # contracts you actually got filled
 
 
 class CalibrationBin(BaseModel):

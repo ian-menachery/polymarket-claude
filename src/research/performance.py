@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 
-from research import db
+from research import db, pricing
 from research.models import Signal
 
 
@@ -137,3 +137,39 @@ def build_report(signals: list[Signal], open_count: int = 0) -> dict:
 def report() -> dict:
     """Track-record report from the persisted signal log (reads settled signals + open count)."""
     return build_report(db.get_resolved_signals(), db.signal_summary()["open"])
+
+
+def total_credit_spend() -> float:
+    """Total USD spent on LLM analysis to date, summed from each analysis's stored token usage.
+
+    Re-priced from current ``pricing.RATES`` (durable token counts, price-independent). Note the
+    batch 50% discount isn't stored per-analysis, so batched scans are counted at full price — a
+    slight *over*-estimate, which keeps the ROI bar honest (conservative).
+    """
+    total = 0.0
+    for r in db.get_analysis_cost_rows():
+        total += pricing.cost_usd(
+            r["model"], r["input_tokens"], r["output_tokens"],
+            r["cache_creation_input_tokens"], r["cache_read_input_tokens"],
+            web_search_requests=r["web_search_requests"],
+        )
+    return total
+
+
+def roi() -> dict:
+    """The headline ROI gauge: realized trading P&L vs Claude credit spend.
+
+    ``net`` < 0 means the tool isn't paying for itself yet. ``open`` positions are excluded from
+    realized P&L (lookahead-free) but surfaced so you know how much is still in flight.
+    """
+    summ = db.signal_summary()
+    realized = summ["realized_pnl"]
+    spend = total_credit_spend()
+    return {
+        "realized_pnl": round(realized, 2),
+        "credit_spend": round(spend, 2),
+        "net": round(realized - spend, 2),
+        "covered": realized >= spend,
+        "settled": summ["resolved"],
+        "open": summ["open"],
+    }

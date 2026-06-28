@@ -246,8 +246,42 @@ def scan_history() -> Any:
 def signals() -> Any:
     return jsonify({
         "summary": db.signal_summary(),
-        "signals": [s.model_dump(mode="json") for s in db.get_signals()],
+        "signals": [
+            {**s.model_dump(mode="json"), "recommended_stake_usd": scanner.recommended_stake_usd(s)}
+            for s in db.get_signals()
+        ],
     })
+
+
+@app.post("/api/signals/<int:signal_id>/fill")
+def record_fill(signal_id: int) -> Any:
+    """Record the actual manual bet placed for a signal, so realized P&L tracks the real fill.
+
+    Accepts ``{stake_usd, price}`` (shares derived) or an explicit ``shares``. Price is the
+    avg fill price/share on the chosen side, in 0–1 dollars.
+    """
+    sig = db.get_signal(signal_id)
+    if sig is None:
+        return jsonify({"error": "signal not found"}), 404
+    body = request.get_json(silent=True) or {}
+    try:
+        stake = float(body["stake_usd"])
+        price = float(body["price"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "stake_usd and price (0-1) are required numbers"}), 400
+    if not (0.0 < price < 1.0) or stake <= 0.0:
+        return jsonify({"error": "price must be in (0,1) and stake_usd > 0"}), 400
+    shares = float(body["shares"]) if "shares" in body else stake / price
+    db.record_signal_fill(signal_id, stake, price, shares)
+    saved = db.get_signal(signal_id)
+    assert saved is not None
+    return jsonify(saved.model_dump(mode="json"))
+
+
+@app.get("/api/roi")
+def roi() -> Any:
+    """Headline gauge: realized trading P&L vs Claude credit spend (are we paying for ourselves?)."""
+    return jsonify(performance.roi())
 
 
 @app.get("/api/alerts")

@@ -86,12 +86,29 @@ const API = {
     if (!r.ok) throw new Error("Failed to load performance");
     return r.json();
   },
+  async getRoi() {
+    const r = await fetch("/api/roi");
+    if (!r.ok) throw new Error("Failed to load ROI");
+    return r.json();
+  },
+  async recordFill(id, body) {
+    const r = await fetch(`/api/signals/${id}/fill`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "Failed to record fill");
+    return d;
+  },
 };
 
 // --- formatting helpers ---
 const pct = (x) => (x == null ? "—" : Math.round(x * 100) + "%");
 const pct1 = (x) => (x == null ? "—" : (x * 100).toFixed(0) + "%");
 const money = (n) => (n == null ? "—" : "$" + Math.round(n).toLocaleString("en-US"));
+// 2-decimal money — for small ROI figures where whole-dollar rounding loses the signal.
+const money2 = (n) => (n == null ? "—" : (n < 0 ? "−$" : "$") + Math.abs(n).toFixed(2));
 const shares = (n) => (n == null ? "" : n >= 1000 ? Math.round(n / 1000) + "k" : String(Math.round(n)));
 const tradeUrl = (slug, exchange) =>
   exchange === "kalshi" ? `https://kalshi.com/markets/${slug}` : `https://polymarket.com/event/${slug}`;

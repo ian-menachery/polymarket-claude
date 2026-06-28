@@ -266,38 +266,52 @@ def normalize_market(raw: dict) -> Market | None:
     )
 
 
-def _orderbook_side(levels: Any, *, invert: bool) -> list[tuple[float, float]]:
-    """Parse one Kalshi ``[[price_cents, count], ...]`` side into ``(price, size)`` pairs.
+def _orderbook_side(levels: Any, *, invert: bool, dollars: bool) -> list[tuple[float, float]]:
+    """Parse one Kalshi ``[[price, count], ...]`` side into ``(price, size)`` pairs in 0–1 dollars.
 
-    Kalshi prices are integer **cents** (1–99); we scale to 0–1 dollars. ``invert=True``
-    flips a NO-bid price to its YES-ask equivalent (a NO bid at ``c``¢ lets you BUY YES at
-    ``100 - c``¢). Levels with an out-of-range price or non-positive size are dropped.
-    Sorted best-first: YES bids descending, YES asks ascending.
+    Two on-the-wire formats are supported. ``dollars=True`` (the live ``orderbook_fp`` schema):
+    prices are already decimal dollars in (0, 1). ``dollars=False`` (legacy ``orderbook``):
+    prices are integer **cents** (1–99), scaled by /100. ``invert=True`` flips a NO-bid price to
+    its YES-ask equivalent (a NO bid at price ``p`` lets you BUY YES at ``1 - p``). Levels with an
+    out-of-range price or non-positive size are dropped; sorted best-first (bids desc, asks asc).
     """
     parsed: list[tuple[float, float]] = []
     for lvl in levels or []:
         try:
-            cents = float(lvl[0])
+            raw = float(lvl[0])
             size = float(lvl[1])
         except (TypeError, ValueError, IndexError):
             continue
-        if not (0 < cents < 100) or size <= 0:
+        if size <= 0:
             continue
-        price = (100.0 - cents) / 100.0 if invert else cents / 100.0
+        if dollars:
+            if not (0 < raw < 1):
+                continue
+            price = (1.0 - raw) if invert else raw
+        else:
+            if not (0 < raw < 100):
+                continue
+            price = (100.0 - raw) / 100.0 if invert else raw / 100.0
         parsed.append((price, size))
     parsed.sort(key=lambda ps: ps[0], reverse=not invert)  # asks ascending, bids descending
     return parsed
 
 
 def _parse_orderbook(book: dict) -> Book | None:
-    """Build a YES-centric ``Book`` from Kalshi's ``{"yes": [...], "no": [...]}`` payload.
+    """Build a YES-centric ``Book`` from a Kalshi orderbook payload.
 
-    ``yes`` are resting bids to buy YES (our YES bids); ``no`` are resting bids to buy NO,
-    which become YES asks once inverted. Returns None for a one-sided book so the scanner
-    falls back to the mid — matching ``polymarket.fetch_book``.
+    Accepts the live decimal-dollar schema (``yes_dollars``/``no_dollars``) and the legacy
+    integer-cents schema (``yes``/``no``). In both, ``yes*`` are resting bids to buy YES (our
+    YES bids) and ``no*`` are resting bids to buy NO, which become YES asks once inverted.
+    Returns None for a one-sided book so the scanner falls back to the mid (matches
+    ``polymarket.fetch_book``).
     """
-    bids = _orderbook_side(book.get("yes"), invert=False)
-    asks = _orderbook_side(book.get("no"), invert=True)
+    if "yes_dollars" in book or "no_dollars" in book:
+        yes_levels, no_levels, dollars = book.get("yes_dollars"), book.get("no_dollars"), True
+    else:
+        yes_levels, no_levels, dollars = book.get("yes"), book.get("no"), False
+    bids = _orderbook_side(yes_levels, invert=False, dollars=dollars)
+    asks = _orderbook_side(no_levels, invert=True, dollars=dollars)
     if not bids or not asks:
         return None
     best_bid, best_ask = bids[0][0], asks[0][0]
@@ -309,15 +323,17 @@ def _parse_orderbook(book: dict) -> Book | None:
 def fetch_book(ticker: str) -> Book | None:
     """Live order book for a Kalshi market (by ticker), or None on failure/one-sided book.
 
-    Reads ``GET /markets/{ticker}/orderbook`` and parses it into the same YES-centric
-    ``Book`` Polymarket returns, so the scanner's VWAP-fill logic is exchange-agnostic.
+    Reads ``GET /markets/{ticker}/orderbook`` and parses it into the same YES-centric ``Book``
+    Polymarket returns, so the scanner's VWAP-fill logic is exchange-agnostic. The live API
+    returns the book under ``orderbook_fp`` (decimal dollars); we fall back to the legacy
+    ``orderbook`` (cents) key for back-compat.
     """
     try:
         with KalshiClient() as client:
             body = client.get(f"/markets/{ticker}/orderbook") or {}
     except (httpx.HTTPError, ValueError, TypeError):
         return None
-    return _parse_orderbook(body.get("orderbook") or {})
+    return _parse_orderbook(body.get("orderbook_fp") or body.get("orderbook") or {})
 
 
 def fetch_resolution(ticker: str) -> bool | None:

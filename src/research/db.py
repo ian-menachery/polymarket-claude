@@ -91,7 +91,10 @@ CREATE TABLE IF NOT EXISTS signals (
     refuter_model       TEXT    DEFAULT NULL,
     resolved            INTEGER DEFAULT NULL,
     resolution          INTEGER DEFAULT NULL,  -- 1=YES won, 0=NO won
-    pnl                 REAL    DEFAULT NULL,   -- realized $ on resolution (modeled VWAP fill)
+    pnl                 REAL    DEFAULT NULL,   -- realized $ on resolution
+    actual_stake_usd    REAL    DEFAULT NULL,   -- manual fill: $ you actually staked
+    actual_price        REAL    DEFAULT NULL,   -- manual fill: your avg price/share
+    actual_shares       REAL    DEFAULT NULL,   -- manual fill: contracts you got
     FOREIGN KEY (market_id) REFERENCES markets(id)
 );
 
@@ -277,6 +280,10 @@ def init_db() -> None:
         signal_cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)").fetchall()}
         if "exchange" not in signal_cols:
             conn.execute("ALTER TABLE signals ADD COLUMN exchange TEXT NOT NULL DEFAULT 'polymarket'")
+        # Manual-execution fill columns (added later) — NULL until a fill is recorded.
+        for col in ("actual_stake_usd", "actual_price", "actual_shares"):
+            if col not in signal_cols:
+                conn.execute(f"ALTER TABLE signals ADD COLUMN {col} REAL DEFAULT NULL")
 
 
 # --- markets -------------------------------------------------------------------
@@ -528,6 +535,37 @@ def resolve_signal(signal_id: int, outcome: bool, pnl: float) -> None:
             "UPDATE signals SET resolved = 1, resolution = ?, pnl = ? WHERE id = ?",
             (1 if outcome else 0, pnl, signal_id),
         )
+
+
+def record_signal_fill(
+    signal_id: int, stake_usd: float, price: float, shares: float
+) -> None:
+    """Record the actual manual bet placed for an open signal (so realized P&L is real).
+
+    Only the fill columns are touched; the frozen log-time prices/EV are left intact.
+    """
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE signals SET actual_stake_usd = ?, actual_price = ?, actual_shares = ? "
+            "WHERE id = ?",
+            (stake_usd, price, shares, signal_id),
+        )
+
+
+def get_signal(signal_id: int) -> Signal | None:
+    """One signal by id, or None."""
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM signals WHERE id = ?", (signal_id,)).fetchone()
+    return _row_to_signal(row) if row else None
+
+
+def get_analysis_cost_rows() -> list[sqlite3.Row]:
+    """Per-analysis model + token usage for cost aggregation (reads only; pricing lives elsewhere)."""
+    with _conn() as conn:
+        return conn.execute(
+            "SELECT model, input_tokens, output_tokens, cache_creation_input_tokens, "
+            "cache_read_input_tokens, web_search_requests FROM analyses"
+        ).fetchall()
 
 
 def get_signals(limit: int = 200) -> list[Signal]:

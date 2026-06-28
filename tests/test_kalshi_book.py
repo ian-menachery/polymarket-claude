@@ -50,10 +50,51 @@ class TestParseOrderbook:
 
 class TestOrderbookSide:
     def test_bids_sorted_descending(self) -> None:
-        side = kalshi._orderbook_side([[61, 10], [63, 10], [62, 10]], invert=False)
+        side = kalshi._orderbook_side([[61, 10], [63, 10], [62, 10]], invert=False, dollars=False)
         assert [p for p, _ in side] == pytest.approx([0.63, 0.62, 0.61])
 
     def test_asks_inverted_and_sorted_ascending(self) -> None:
         # NO bids 37/36 -> YES asks 63/64, best (lowest) first.
-        side = kalshi._orderbook_side([[36, 10], [37, 10]], invert=True)
+        side = kalshi._orderbook_side([[36, 10], [37, 10]], invert=True, dollars=False)
         assert [p for p, _ in side] == pytest.approx([0.63, 0.64])
+
+
+class TestParseOrderbookDollars:
+    """The live `orderbook_fp` schema: yes_dollars/no_dollars as decimal-dollar strings (0-1)."""
+
+    def test_decimal_dollar_two_sided(self) -> None:
+        book = kalshi._parse_orderbook(
+            {
+                "yes_dollars": [["0.6200", "1200.00"], ["0.6100", "800.00"]],
+                "no_dollars": [["0.3700", "1500.00"], ["0.3600", "900.00"]],
+            }
+        )
+        assert book is not None
+        assert book.best_bid == pytest.approx(0.62)          # yes bid as-is
+        assert book.bid_depth == pytest.approx(1200)
+        assert book.best_ask == pytest.approx(0.63)          # NO 0.37 -> YES ask 1-0.37
+        assert book.ask_depth == pytest.approx(1500)
+
+    def test_deci_cent_prices_supported(self) -> None:
+        # Kalshi can quote sub-cent (deci-cent) prices like 0.0010.
+        book = kalshi._parse_orderbook(
+            {"yes_dollars": [["0.0010", "1000"]], "no_dollars": [["0.0300", "500"]]}
+        )
+        assert book is not None
+        assert book.best_bid == pytest.approx(0.001)
+        assert book.best_ask == pytest.approx(0.97)          # 1 - 0.03
+
+    def test_one_sided_dollars_returns_none(self) -> None:
+        assert kalshi._parse_orderbook({"yes_dollars": [["0.62", "10"]]}) is None  # no asks
+        assert kalshi._parse_orderbook({"no_dollars": [["0.37", "10"]]}) is None   # no bids
+
+    def test_out_of_range_dollars_dropped(self) -> None:
+        # dollars must be strictly inside (0,1); size > 0.
+        book = kalshi._parse_orderbook(
+            {
+                "yes_dollars": [["0", "100"], ["1", "100"], ["0.6", "0"], ["0.5", "700"]],
+                "no_dollars": [["0.3", "400"]],
+            }
+        )
+        assert book is not None
+        assert book.bids == [(pytest.approx(0.5), pytest.approx(700))]
