@@ -11,13 +11,17 @@ KALSHI_MIN = 5000.0
 
 
 def _req(**over) -> ScanRequest:
-    return ScanRequest(**over)
+    # Pass gates explicitly so the test is hermetic — ScanRequest's defaults now read from env
+    # (.env is loaded into the process during the test session via analyzer's load_dotenv).
+    base = dict(min_volume_24h=0.0, min_days_to_close=0.0, max_days_to_close=0.0)
+    base.update(over)
+    return ScanRequest(**base)  # type: ignore[arg-type]
 
 
-def test_no_max_cap_by_default() -> None:
-    # max_days_to_close defaults to 0 (no cap): a far-dated market still passes.
+def test_no_max_cap_when_zero() -> None:
+    # max_days_to_close=0 means no cap: a far-dated market still passes.
     m = make_market(days_to_close=120.0, volume_24h=10_000.0)
-    assert _passes_pre(m, _req(), KALSHI_MIN) is True
+    assert _passes_pre(m, _req(max_days_to_close=0.0), KALSHI_MIN) is True
 
 
 def test_within_max_cap_passes() -> None:

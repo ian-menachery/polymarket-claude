@@ -215,16 +215,25 @@ class ScanRequest(BaseModel):
     422/400 instead of exhausting memory or LLM budget. Defaults are unchanged.
     """
 
-    min_volume_24h: float = Field(default=10_000, ge=0)
+    # The gate defaults read from env so manual scans (/api/scan) and the scheduled auto-scan
+    # apply the SAME gates without the caller having to repeat them; an explicit value in the
+    # request body still overrides. (Mirrors how max_llm_calls defaults from MAX_LLM_CALLS_PER_SCAN.)
+    min_volume_24h: float = Field(
+        default_factory=lambda: float(os.getenv("SCAN_MIN_VOLUME_24H", "10000")), ge=0
+    )
     max_age_hours: float = Field(default=24.0, ge=0)
     min_divergence: float = Field(default=0.05, ge=0, le=1)
     category: str | None = None
     max_markets: int = Field(default=100, ge=1, le=1000)
     min_liquidity: float = Field(default=0.0, ge=0)
-    min_days_to_close: float = Field(default=7.0, ge=0)  # below this, annualized EV is noise
+    min_days_to_close: float = Field(  # below this, annualized EV is noise
+        default_factory=lambda: float(os.getenv("SCAN_MIN_DAYS_TO_CLOSE", "7")), ge=0
+    )
     # Upper bound on days-to-close (0 = no cap). Biases a scan toward near-dated markets so
     # resolved (estimate, outcome) pairs accrue quickly — useful while building calibration.
-    max_days_to_close: float = Field(default=0.0, ge=0)
+    max_days_to_close: float = Field(
+        default_factory=lambda: float(os.getenv("SCAN_MAX_DAYS_TO_CLOSE", "0")), ge=0
+    )
     refute_top: int = Field(default=0, ge=0, le=50)  # refute top-N ranked edges (0 = off)
     # Hard ceiling on fresh LLM calls (market analyses + refutations) for ONE scan, so a single
     # scan can't burn through the API budget. Reused/cached analyses are free and don't count;

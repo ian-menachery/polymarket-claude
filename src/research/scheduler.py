@@ -18,7 +18,6 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from research import db, scanner
 from research.models import ScanRequest
@@ -41,18 +40,10 @@ def _scan_log_path() -> Path:
 
 
 def _build_request() -> ScanRequest:
-    # Gate defaults come from the model; env knobs let the calibration flywheel be tuned
-    # without code changes. SCAN_MAX_DAYS_TO_CLOSE biases toward near-dated markets so
-    # resolved pairs accrue fast; SCAN_MIN_DAYS_TO_CLOSE can lower the 7-day floor.
-    # No refutation on autoscan (refute_top=0) to bound cost.
-    kwargs: dict[str, Any] = {"max_markets": int(os.getenv("MAX_SCAN_MARKETS", "100"))}
-    if (v := os.getenv("SCAN_MIN_DAYS_TO_CLOSE")) is not None:
-        kwargs["min_days_to_close"] = float(v)
-    if (v := os.getenv("SCAN_MAX_DAYS_TO_CLOSE")) is not None:
-        kwargs["max_days_to_close"] = float(v)
-    if (v := os.getenv("SCAN_MIN_VOLUME_24H")) is not None:
-        kwargs["min_volume_24h"] = float(v)
-    return ScanRequest(**kwargs)
+    # The gate defaults (volume / days-to-close / max LLM calls) read from env inside
+    # ScanRequest, so manual and scheduled scans share them. No refutation on autoscan
+    # (refute_top=0) to bound cost.
+    return ScanRequest(max_markets=int(os.getenv("MAX_SCAN_MARKETS", "100")))
 
 
 def run_once() -> dict:
