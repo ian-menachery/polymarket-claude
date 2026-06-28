@@ -147,6 +147,22 @@ class TestEventDedup:
         assert scanner.persist_signals([_exec_result(b, ev=0.2)]) == 0   # same event already open
 
 
+class TestObservedCostEstimate:
+    def test_uses_real_recent_cost(self, temp_db) -> None:
+        temp_db.upsert_markets([make_market(id="m1", exchange="kalshi")])
+        temp_db.save_analysis(Analysis(
+            market_id="m1", model="claude-sonnet-4-6", claude_prob=0.5,
+            input_tokens=1_000_000, output_tokens=0,  # 1M input @ $3/1M = $3.00
+        ))
+        assert scanner._observed_cost_per_call("claude-sonnet-4-6") == pytest.approx(3.0)
+
+    def test_none_without_priced_rows(self, temp_db) -> None:
+        # An analysis with no token usage isn't priceable -> None -> caller falls back to assumed.
+        temp_db.upsert_markets([make_market(id="m2", exchange="kalshi")])
+        temp_db.save_analysis(Analysis(market_id="m2", model="claude-sonnet-4-6", claude_prob=0.5))
+        assert scanner._observed_cost_per_call("claude-sonnet-4-6") is None
+
+
 class TestHealthCheck:
     def _patch(self, monkeypatch, *, book):
         m = make_market(id="KXHIGHNY-1", exchange="kalshi")

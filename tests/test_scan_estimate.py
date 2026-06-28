@@ -64,7 +64,8 @@ def test_estimate_cost_is_model_priced(temp_db, monkeypatch) -> None:
     monkeypatch.setattr(scanner.analyzer, "current_model", lambda: "claude-sonnet-4-6")
     monkeypatch.setenv("EST_INPUT_TOKENS", "1000000")  # 1M input @ $3/1M = $3.00/call
     monkeypatch.setenv("EST_OUTPUT_TOKENS", "0")
-    monkeypatch.setenv("EST_WEB_SEARCHES", "0")  # isolate token pricing here
+    monkeypatch.setenv("EST_CACHE_READ_TOKENS", "0")  # isolate token pricing here
+    monkeypatch.setenv("EST_WEB_SEARCHES", "0")
     est = scanner.estimate_scan(ScanRequest(max_markets=2, refute_top=0))
     assert est["model"] == "claude-sonnet-4-6"
     assert est["cost_per_call_usd"] == pytest.approx(3.0)
@@ -76,6 +77,7 @@ def test_estimate_includes_web_search_fee(temp_db, monkeypatch) -> None:
     monkeypatch.setattr(scanner.analyzer, "current_model", lambda: "claude-sonnet-4-6")
     monkeypatch.setenv("EST_INPUT_TOKENS", "1000000")  # $3.00 tokens
     monkeypatch.setenv("EST_OUTPUT_TOKENS", "0")
+    monkeypatch.setenv("EST_CACHE_READ_TOKENS", "0")
     monkeypatch.setenv("EST_WEB_SEARCHES", "4")  # + 4 * $0.01 = $0.04
     est = scanner.estimate_scan(ScanRequest(max_markets=1))
     assert est["cost_per_call_usd"] == pytest.approx(3.04)

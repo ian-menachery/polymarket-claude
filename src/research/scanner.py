@@ -453,15 +453,35 @@ def ingest_batch(batch_id: str) -> dict | None:
     }
 
 
+def _observed_cost_per_call(model: str, sample: int = 30) -> float | None:
+    """Average real cost over recent stored analyses for ``model`` (those with token usage), or None.
+
+    Self-calibrates the estimate to actual spend — a live web-search analysis costs far more than a
+    naive token guess (multiple search rounds + a large cached context). None when no priced rows
+    exist yet (a fresh model), so the caller falls back to the token-based assumption.
+    """
+    priced = [
+        pricing.cost_usd(
+            r["model"], r["input_tokens"], r["output_tokens"],
+            r["cache_creation_input_tokens"], r["cache_read_input_tokens"],
+            web_search_requests=r["web_search_requests"],
+        )
+        for r in db.get_analysis_cost_rows()
+        if r["model"] == model and r["input_tokens"] is not None
+    ]
+    priced = priced[-sample:]  # most recent (rows come in insert order)
+    return sum(priced) / len(priced) if priced else None
+
+
 def estimate_scan(req: ScanRequest) -> dict:
     """Dry-run preview of a scan's LLM spend — makes NO LLM calls and writes nothing.
 
     Fetches market data (free) and reads the analysis cache to count how many candidates would
     need a *fresh* analysis (cache misses) vs. be reused, then applies the same per-scan cap as
-    ``scan()``. The call count is exact; ``estimated_cost_usd`` prices it with the **current model's**
-    per-token rate (``pricing.py``) × assumed tokens/call (``EST_INPUT_TOKENS``/``EST_OUTPUT_TOKENS``)
-    — still an estimate (real usage varies; the post-scan run log carries the true cost).
-    ``refute_max`` is an upper bound (actual refutations are ``<=`` it).
+    ``scan()``. The call count is exact; ``cost_per_call_usd`` is the **real recent average** for the
+    current model when there's data (``cost_basis="observed"``), else a token-based assumption
+    (``"assumed"``). ``refute_max`` is an upper bound (actual refutations are ``<=`` it). The
+    post-scan run log still carries the exact realized cost.
     """
     markets = exchanges.fetch_active(req.max_markets)  # market data only — no cost, no DB writes
     kalshi_min_volume = float(os.getenv("KALSHI_MIN_VOLUME", "5000"))
@@ -480,10 +500,21 @@ def estimate_scan(req: ScanRequest) -> dict:
         est_calls = min(est_calls, req.max_llm_calls)
 
     model = analyzer.current_model()
-    est_in = int(os.getenv("EST_INPUT_TOKENS", "1500"))
-    est_out = int(os.getenv("EST_OUTPUT_TOKENS", "700"))
-    est_searches = int(os.getenv("EST_WEB_SEARCHES", "3"))  # assumed server-side searches per call
-    cost_per_call = pricing.cost_usd(model, est_in, est_out, web_search_requests=est_searches)
+    observed = _observed_cost_per_call(model)
+    if observed is not None:
+        cost_per_call, basis = observed, "observed"  # real recent average — most accurate
+    else:
+        # Fallback for a model with no recorded analyses yet. Includes a cache-read assumption
+        # because a web-search analysis re-sends a large cached context each round — the single
+        # biggest cost driver and what the old token-only estimate ignored (it badly undercounted).
+        est_in = int(os.getenv("EST_INPUT_TOKENS", "1500"))
+        est_out = int(os.getenv("EST_OUTPUT_TOKENS", "700"))
+        est_cache_read = int(os.getenv("EST_CACHE_READ_TOKENS", "20000"))
+        est_searches = int(os.getenv("EST_WEB_SEARCHES", "3"))
+        cost_per_call = pricing.cost_usd(
+            model, est_in, est_out, cache_read_tokens=est_cache_read, web_search_requests=est_searches
+        )
+        basis = "assumed"
     return {
         "candidates": len(candidates),
         "cached": cached,
@@ -493,6 +524,7 @@ def estimate_scan(req: ScanRequest) -> dict:
         "estimated_calls": est_calls,
         "model": model,
         "cost_per_call_usd": round(cost_per_call, 4),
+        "cost_basis": basis,  # "observed" (real recent avg) or "assumed" (token estimate)
         "estimated_cost_usd": round(est_calls * cost_per_call, 2),
     }
 
