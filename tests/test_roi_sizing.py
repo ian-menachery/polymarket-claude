@@ -24,8 +24,17 @@ class TestRecommendedStake:
     def test_fractional_kelly(self, monkeypatch) -> None:
         monkeypatch.setenv("BANKROLL_USD", "200")
         monkeypatch.setenv("KELLY_FRACTION", "0.25")
+        monkeypatch.delenv("MAX_POSITION_USD", raising=False)
         # 0.25 * 0.20 * 200 = $10; depth cap = 100 * 0.50 = $50 (not binding)
         assert scanner.recommended_stake_usd(_sig(kelly=0.20)) == pytest.approx(10.0)
+
+    def test_hard_position_cap_binds(self, monkeypatch) -> None:
+        monkeypatch.setenv("BANKROLL_USD", "200")
+        monkeypatch.setenv("KELLY_FRACTION", "0.25")
+        monkeypatch.setenv("MAX_POSITION_USD", "10")
+        # kelly stake = 0.25 * 0.8 * 200 = $40, depth ample, but the $10 hard cap binds.
+        s = _sig(kelly=0.8, fill_shares=1000.0, price_paid=0.50)
+        assert scanner.recommended_stake_usd(s) == pytest.approx(10.0)
 
     def test_depth_cap_binds(self, monkeypatch) -> None:
         monkeypatch.setenv("BANKROLL_USD", "200")

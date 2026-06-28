@@ -85,9 +85,11 @@ def recommended_stake_usd(sig: Signal) -> float:
     """Conservative manual-trade stake (USD) for a signal, from fractional Kelly.
 
     ``BANKROLL_USD`` is the account it scales against; ``KELLY_FRACTION`` (default quarter-Kelly)
-    keeps sizing conservative while the model is uncalibrated. Capped by the depth-modeled fill
+    keeps sizing conservative while the model is uncalibrated. Bounded by the depth-modeled fill
     cost (``fill_shares * price_paid``) so we never recommend more than the book showed it could
-    fill at the modeled price, and by the bankroll. Returns 0.0 when there's no positive edge.
+    fill at the modeled price, by the bankroll, and by a hard per-position cap
+    ``MAX_POSITION_USD`` (0 = no cap) — important while uncalibrated, since Kelly sizes big on
+    extreme-longshot edges where LLMs are least reliable. Returns 0.0 when there's no positive edge.
     """
     kelly = sig.kelly or 0.0
     if kelly <= 0:
@@ -95,8 +97,11 @@ def recommended_stake_usd(sig: Signal) -> float:
     bankroll = float(os.getenv("BANKROLL_USD", "200"))
     fraction = float(os.getenv("KELLY_FRACTION", "0.25"))
     depth_cap = sig.fill_shares * sig.price_paid  # max $ the book filled at the modeled VWAP
-    raw = min(fraction * kelly * bankroll, depth_cap, bankroll)
-    return round(max(raw, 0.0), 2)
+    caps = [fraction * kelly * bankroll, depth_cap, bankroll]
+    max_position = float(os.getenv("MAX_POSITION_USD", "0"))
+    if max_position > 0:
+        caps.append(max_position)
+    return round(max(min(caps), 0.0), 2)
 
 
 def _book_fills(book: polymarket.Book, target: float) -> dict:
