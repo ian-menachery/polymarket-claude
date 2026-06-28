@@ -749,7 +749,11 @@ def emit_alerts(results: list[ScanResult]) -> int:
             "ev": r.ev,
             "annualized_ev": r.annualized_ev,
             "price_paid": r.price_paid,
-            "trade_url": f"https://polymarket.com/event/{r.market.slug}",
+            "trade_url": (
+                f"https://kalshi.com/markets/{r.market.id.split('-')[0].lower()}"
+                if r.market.exchange == "kalshi"
+                else f"https://polymarket.com/event/{r.market.slug}"
+            ),
         }
         new_records.append(rec)
         recent[r.market.id] = now  # dedup within this batch too

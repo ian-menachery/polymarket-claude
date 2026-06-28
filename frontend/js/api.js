@@ -115,8 +115,12 @@ const money = (n) => (n == null ? "—" : "$" + Math.round(n).toLocaleString("en
 // 2-decimal money — for small ROI figures where whole-dollar rounding loses the signal.
 const money2 = (n) => (n == null ? "—" : (n < 0 ? "−$" : "$") + Math.abs(n).toFixed(2));
 const shares = (n) => (n == null ? "" : n >= 1000 ? Math.round(n / 1000) + "k" : String(Math.round(n)));
+// Kalshi web pages live at /markets/{series-ticker} (lowercased) — the full market ticker 404s.
+// The series page lands on the live contracts (e.g. today's temperature strikes) to place the bet.
 const tradeUrl = (slug, exchange) =>
-  exchange === "kalshi" ? `https://kalshi.com/markets/${slug}` : `https://polymarket.com/event/${slug}`;
+  exchange === "kalshi"
+    ? `https://kalshi.com/markets/${String(slug).split("-")[0].toLowerCase()}`
+    : `https://polymarket.com/event/${slug}`;
 
 function timeToClose(iso) {
   if (!iso) return "—";
